@@ -10,8 +10,12 @@
  *
  * Morning mode fetches https://insighterplus.github.io/data/live.json
  * (cache-busted) and composes bilingual messages from REAL figures only:
- * parallel USD buy/sell + gold 21k buy/sell, with the change vs yesterday
- * when the data carries it. If the feed is unreachable, a figure is
+ * parallel USD buy/sell + official (Central Bank) USD rate + gold 21k
+ * buy/sell + a fuel line from the repo's data/fuel.json, with the
+ * change vs yesterday when the data carries it. The fuel line is
+ * optional: if fuel.json is missing or unreadable it is omitted and
+ * the send still goes ahead.
+ * If the feed is unreachable, a figure is
  * missing, or the data is stale (> 6 hours old), the script FAILS
  * WITHOUT SENDING — it never sends wrong or stale numbers.
  *
@@ -30,6 +34,7 @@
  */
 import https from 'node:https';
 import crypto from 'node:crypto';
+import { readFileSync } from 'node:fs';
 
 const LIVE_JSON_URL = 'https://insighterplus.github.io/data/live.json';
 const FCM_SCOPE = 'https://www.googleapis.com/auth/firebase.messaging';
@@ -172,18 +177,45 @@ function changePart(change, decimals, vsWord) {
   return ` (${arrow} ${text} ${vsWord})`;
 }
 
+// --- Fuel prices (optional) ---
+// Read from the repo checkout (data/fuel.json, committed alongside this
+// script). Returns the 4 main prices or null — any problem means the fuel
+// line is simply omitted, never a failed send.
+function loadFuel() {
+  try {
+    const raw = readFileSync(
+      new URL('../data/fuel.json', import.meta.url),
+      'utf8'
+    );
+    const data = JSON.parse(raw);
+    const byId = {};
+    for (const item of data?.items ?? []) {
+      if (item?.id && isNumber(item.price)) byId[item.id] = item.price;
+    }
+    const p95 = byId.petrol95;
+    const p90 = byId.petrol90;
+    const diesel = byId.diesel1;
+    const gas = byId.gas_home;
+    if (![p95, p90, diesel, gas].every(isNumber)) return null;
+    return { p95, p90, diesel, gas };
+  } catch {
+    return null;
+  }
+}
+
 function composeMorning(live) {
   const syria = live?.syria;
   const usd = syria?.usd;
   const gold = syria?.gold21k;
   const buy = usd?.parallel_buy;
   const sell = usd?.parallel_sell;
+  const central = usd?.central_sell; // the single official CB rate
   const gBuy = gold?.buy;
   const gSell = gold?.sell;
-  if (![buy, sell, gBuy, gSell].every(isNumber)) {
+  if (![buy, sell, central, gBuy, gSell].every(isNumber)) {
     fail(
-      'live.json is missing a required figure (parallel USD buy/sell or ' +
-        'gold 21k buy/sell) — not sending'
+      'live.json is missing a required figure (parallel USD buy/sell, ' +
+        'official USD rate or gold 21k buy/sell) — not sending'
     );
   }
   const fetchedAt = Date.parse(live?.fetched_at ?? '');
@@ -215,21 +247,34 @@ function composeMorning(live) {
         : null;
   }
 
+  // Fuel line (optional — omitted when fuel.json is unavailable).
+  const fuel = loadFuel();
+  const fuelAr = fuel
+    ? `\nمحروقات: بنزين 95: ${fmtInt(fuel.p95)} · 90: ${fmtInt(fuel.p90)} · مازوت: ${fmtInt(fuel.diesel)} · غاز: ${fmtInt(fuel.gas)}`
+    : '';
+  const fuelEn = fuel
+    ? `\nFuel: petrol 95: ${fmtInt(fuel.p95)} · 90: ${fmtInt(fuel.p90)} · diesel: ${fmtInt(fuel.diesel)} · gas: ${fmtInt(fuel.gas)}`
+    : '';
+
   const ar = {
     title: 'أسعار الصباح — سوريا',
     body:
-      `الدولار: شراء ${fmt2(buy)} · بيع ${fmt2(sell)}` +
+      `دولار موازي ${fmt2(buy)} / ${fmt2(sell)}` +
       changePart(usdChange, 2, 'عن أمس') +
-      `\nذهب 21: شراء ${fmtInt(gBuy)} · بيع ${fmtInt(gSell)}` +
-      changePart(goldChange, 0, 'عن أمس'),
+      ` · مركزي ${fmt2(central)}` +
+      `\nذهب 21: ${fmtInt(gBuy)} / ${fmtInt(gSell)}` +
+      changePart(goldChange, 0, 'عن أمس') +
+      fuelAr,
   };
   const en = {
     title: 'Morning prices — Syria',
     body:
-      `USD: buy ${fmt2(buy)} · sell ${fmt2(sell)}` +
+      `USD parallel ${fmt2(buy)} / ${fmt2(sell)}` +
       changePart(usdChange, 2, 'vs yesterday') +
-      `\nGold 21k: buy ${fmtInt(gBuy)} · sell ${fmtInt(gSell)}` +
-      changePart(goldChange, 0, 'vs yesterday'),
+      ` · official ${fmt2(central)}` +
+      `\nGold 21k: ${fmtInt(gBuy)} / ${fmtInt(gSell)}` +
+      changePart(goldChange, 0, 'vs yesterday') +
+      fuelEn,
   };
   return { ar, en };
 }
