@@ -39,6 +39,20 @@ jobs:
         with:
           node-version: '20'
 
+      # OCR tools for the Central Bank bulletin (Telegram @SyCBOS photo ->
+      # tesseract). Installed fresh on every run — runners are ephemeral, so
+      # there is nothing to cache; --no-install-recommends keeps it lean
+      # (~1 min on GitHub's runners). The updater itself never needs these
+      # tools to be present to keep the last good data (OCR failure is a
+      # soft failure: the old central table stays live).
+      # eng only: the bulletin table, codes and numbers are all Latin, and
+      # eng-only OCR is both faster and more accurate on this image than
+      # eng+ara (verified on Bulletin 213 — ara data is NOT installed).
+      - name: Install OCR tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends tesseract-ocr tesseract-ocr-eng imagemagick
+
       - name: Fetch live data
         run: node scripts/update-live-data.mjs
 
