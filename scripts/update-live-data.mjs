@@ -25,8 +25,10 @@
 //     mid == Frankfurter EUR/USD within ~1%, all 21 currencies present,
 //     each mid between buy and sell. On ANY failure the last good central
 //     table stays untouched. The 10 cross-rate derived rows are never
-//     replaced (the bulletin publishes 21 currencies; JPY + CNY have no
-//     rows in the 28-currency table and are skipped).
+//     replaced by OCR (the bulletin publishes 21 currencies; the other 10
+//     rows keep their crossed central values). JPY + CNY are full table
+//     rows: central from the bulletin OCR, parallel crossed from the
+//     parallel USD through Frankfurter (JPY quoted per 100 yen).
 //     NOTE: tesseract eng+ara --psm 6 was tested and REJECTED — it misreads
 //     this image badly (codes garbled, decimal points dropped). Threshold +
 //     --psm 11 + TSV positions + two-pass cross-check is what actually works
@@ -912,6 +914,88 @@ function validate(live) {
   return problems;
 }
 
+// --- Currency table shape: 31 rows ---------------------------------------
+// The table holds all 21 bulletin currencies (USD first) plus 10 extra
+// rows whose central values are crossed from the USD bulletin rate
+// (IQD, BRL, DZD, LYD, MAD, MYR, NZD, SGD, TND, ZAR). USD lives in the
+// array as a row AND in syria.usd (the hero figures read syria.usd);
+// the row is synced from syria.usd every run so the two never disagree.
+// JPY is quoted PER 100 YEN in both tables (the bulletin convention);
+// CNY + JPY have no rows in the market sources, so their parallel rates
+// are crossed from the parallel USD through Frankfurter (ECB) rates.
+const TABLE_ORDER = [...BULLETIN_CODES]; // bulletin order; the rest keep their order after it
+
+function ensureCurrencyRows(live) {
+  if (!live.syria) live.syria = {};
+  if (!Array.isArray(live.syria.currencies)) live.syria.currencies = [];
+  const rows = live.syria.currencies;
+  const byCode = {};
+  for (const r of rows) if (r && r.code) byCode[r.code] = r;
+  const usd = live.syria.usd || {};
+  // USD row: exact figures from syria.usd (hero source of truth).
+  if (!byCode.USD && usd.central_buy && usd.central_sell && usd.parallel_buy && usd.parallel_sell) {
+    const row = {
+      code: 'USD', name: 'US dollar',
+      central_buy: usd.central_buy, central_sell: usd.central_sell,
+      central_mid: round((usd.central_buy + usd.central_sell) / 2, 2),
+      parallel_buy: usd.parallel_buy, parallel_sell: usd.parallel_sell,
+      central_derived: false,
+    };
+    rows.unshift(row);
+    byCode.USD = row;
+  }
+  // CNY + JPY rows: seed from the USD rates crossed through the stored
+  // Frankfurter rates (the OCR merge replaces the central values with the
+  // exact bulletin figures whenever it runs; the Syria section refreshes
+  // the parallel values from the fresh USD every run). If no FX rates are
+  // stored yet the rows are still created and filled by the derivation
+  // step / OCR later in the run — never left blank on purpose.
+  const rates = (live.fx && live.fx.rates) || {};
+  for (const [code, name, scale] of [['CNY', 'Chinese yuan', 1], ['JPY', 'Japanese yen', 100]]) {
+    if (byCode[code]) continue;
+    const perUsd = num(rates[code]);
+    const row = { code, name, central_derived: true, parallel_derived: true };
+    if (perUsd && usd.central_buy && usd.central_sell) {
+      row.central_buy = round(usd.central_buy / perUsd * scale, 2);
+      row.central_sell = round(usd.central_sell / perUsd * scale, 2);
+      row.central_mid = round((row.central_buy + row.central_sell) / 2, 2);
+    }
+    if (perUsd && usd.parallel_buy && usd.parallel_sell) {
+      row.parallel_buy = round(usd.parallel_buy / perUsd * scale, 2);
+      row.parallel_sell = round(usd.parallel_sell / perUsd * scale, 2);
+    }
+    rows.push(row);
+    byCode[code] = row;
+  }
+  // Canonical order: the 21 bulletin currencies in bulletin order (USD
+  // first), then the 10 derived rows in their previous relative order.
+  const orderIndex = {};
+  TABLE_ORDER.forEach((c, i) => { orderIndex[c] = i; });
+  const prevIndex = new Map(rows.map((r, i) => [r.code, i]));
+  rows.sort((a, b) => {
+    const ia = orderIndex[a.code] !== undefined ? orderIndex[a.code] : 100 + (prevIndex.get(a.code) || 0);
+    const ib = orderIndex[b.code] !== undefined ? orderIndex[b.code] : 100 + (prevIndex.get(b.code) || 0);
+    return ia - ib;
+  });
+}
+
+// Keep the USD table row in lock-step with syria.usd (the hero figures).
+function syncUsdRow(live) {
+  const row = (live.syria.currencies || []).find((r) => r.code === 'USD');
+  const usd = live.syria.usd || {};
+  if (!row) return;
+  if (usd.central_buy && usd.central_sell) {
+    row.central_buy = usd.central_buy;
+    row.central_sell = usd.central_sell;
+    row.central_mid = round((usd.central_buy + usd.central_sell) / 2, 2);
+    row.central_derived = false;
+  }
+  if (usd.parallel_buy && usd.parallel_sell) {
+    row.parallel_buy = usd.parallel_buy;
+    row.parallel_sell = usd.parallel_sell;
+  }
+}
+
 // ---------------------------------------------------------------- main
 
 async function main() {
@@ -927,6 +1011,10 @@ async function main() {
   // simply stays at its last good value.
   const live = JSON.parse(JSON.stringify(prev));
   live.fetched_at = now;
+  // Currency table shape: all 21 bulletin currencies (USD first) + the 10
+  // derived rows. Missing rows are created (seeded from syria.usd / stored
+  // FX) and the array is put in canonical bulletin order.
+  ensureCurrencyRows(live);
   const groupOk = {}; // group key -> true when its fetch succeeded this run
   const groupSource = {}; // group key -> {source, source_ar} override for this run
   const groupFetchedAt = {}; // group key -> ISO timestamp override (provider's own time)
@@ -997,7 +1085,7 @@ async function main() {
       if (sp.goldOunceUSD) live.syria.gold_ounce_usd = sp.goldOunceUSD;
       if (sp.silverOunceUSD) live.syria.silver_ounce_usd = sp.silverOunceUSD;
     }
-    // Parallel rates for the 28-currency table: sp-today primary; Lirascope
+    // Parallel rates for the 31-currency table: sp-today primary; Lirascope
     // when sp-today is down. IQD is skipped from sp-today (it rounds it to
     // 0.10/0.10, losing precision) — instead IQD is always filled from
     // Lirascope when available, since it publishes IQD properly (0.0977/0.0992).
@@ -1013,6 +1101,33 @@ async function main() {
     if (ls && ls.table && ls.table.IQD) {
       const iqdRow = live.syria.currencies.find((r) => r.code === 'IQD');
       if (iqdRow) { iqdRow.parallel_buy = ls.table.IQD.buy; iqdRow.parallel_sell = ls.table.IQD.sell; }
+    }
+    // CNY + JPY have no rows in the market sources — their parallel rates
+    // are crossed from the fresh cross-validated parallel USD through
+    // Frankfurter (ECB): SYP per CNY = USD/SYP ÷ CNY-per-USD. JPY is
+    // quoted per 100 yen (the bulletin convention), so its crossed rate
+    // is scaled ×100. Stored FX rates are the fallback if Frankfurter is
+    // unreachable this run; on total failure the last good values stay.
+    {
+      let fxRates = (live.fx && live.fx.rates) || null;
+      try {
+        const fxFresh = await fetchFXCached();
+        if (fxFresh && fxFresh.rates) fxRates = fxFresh.rates;
+      } catch (e) { log(`WARN: Frankfurter unavailable for CNY/JPY cross (${e.message}) — using stored rates`); }
+      if (fxRates && num(fxRates.CNY) && num(fxRates.JPY)) {
+        const cnyRow = live.syria.currencies.find((r) => r.code === 'CNY');
+        if (cnyRow) {
+          cnyRow.parallel_buy = round(primary.usd.buy / fxRates.CNY, 2);
+          cnyRow.parallel_sell = round(primary.usd.sell / fxRates.CNY, 2);
+          cnyRow.parallel_derived = true;
+        }
+        const jpyRow = live.syria.currencies.find((r) => r.code === 'JPY');
+        if (jpyRow) {
+          jpyRow.parallel_buy = round(primary.usd.buy / fxRates.JPY * 100, 2);
+          jpyRow.parallel_sell = round(primary.usd.sell / fxRates.JPY * 100, 2);
+          jpyRow.parallel_derived = true;
+        }
+      }
     }
     // History: one entry per day for the 30-day trend. The USD part updates
     // whenever a fresh USD is available; the gold part only when sp-today
@@ -1118,8 +1233,8 @@ async function main() {
     // (@SyCBOS): the bulletin posts there daily as an image (~12:30 Damascus
     // on working days). Download -> preprocess -> OCR (two threshold passes,
     // TSV positions) -> repair single-digit errors -> validate against
-    // cb.gov.sy USD + Frankfurter EUR/USD -> merge into the 18 published
-    // rows of the 28-currency table. On ANY failure the last good central
+    // cb.gov.sy USD + Frankfurter EUR/USD -> merge into the 21 bulletin
+    // rows of the 31-currency table. On ANY failure the last good central
     // table stays untouched.
     try {
       const tg = await fetchTelegramBulletin();
@@ -1160,8 +1275,8 @@ async function main() {
         row.central_derived = false;
         updated++;
       }
-      // JPY + CNY are published in the bulletin but have no rows in the
-      // 28-currency table — logged, not added (the table shape is fixed).
+      // JPY + CNY are full table rows now, so the merge above covers all
+      // 21 bulletin currencies (USD included) — `updated` counts them.
       live.bulletin = String(parsed.bulletinNo);
       if (parsed.date > (live.bulletin_date || '0000-00-00')) live.bulletin_date = parsed.date;
       markSource('telegram_sycbos', 'ok');
@@ -1511,6 +1626,10 @@ async function main() {
   if (divergenceNotes.length > 0) noteParts.push(`Cross-check divergences this run: ${divergenceNotes.join(' | ')}`);
   live.notes = noteParts.join(' ');
   live.sources = SOURCES;
+
+  // Keep the USD table row in lock-step with syria.usd (the hero figures),
+  // so the tables and the hero can never disagree on the dollar.
+  syncUsdRow(live);
 
   // --- Validate, then write ----------------------------------------------------
   // The file is written on every valid run (even when no figure moved), so
