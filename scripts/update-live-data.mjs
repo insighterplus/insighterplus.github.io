@@ -13,11 +13,27 @@
 //     so a missing bulletin on Fri/Sat is NOT a failure and is NOT flagged stale;
 //     the last working-day bulletin stays current. (Verified: bulletins 209 Sun 8 Nov,
 //     210 Mon 9 Nov, 211 Tue 10 Nov, 213 Thu 12 Nov; none Fri 13 / Sat 14 Nov.)
-//     Facebook route investigated 15 Nov 2026 and NOT implemented: the CB's official
-//     page (facebook.com/cb.gov.sy) posts the bulletin ONLY as a scanned image;
-//     unauthenticated requests hit a login wall (HTTP 400/403), there is no public
-//     text publication of the figures anywhere, and no Telegram mirror. The Actions
-//     runner cannot use Nexus's Facebook connector. Do NOT build Facebook/OCR hacks.
+//     Full 21-currency table: the CB's official Telegram channel @SyCBOS
+//     (t.me/s/SyCBOS — server-rendered HTML, no login, no JS) posts the bulletin
+//     daily as an image (~12:30 Damascus on working days). The updater downloads
+//     the photo, preprocesses it (grayscale + 3x upscale + threshold, two
+//     passes at 55% and 65%), OCRs it with tesseract (eng, --psm 11, TSV
+//     word positions), parses the 21 rows by table geometry, repairs
+//     single-digit OCR errors against the mid == (buy+sell)/2 identity, and
+//     validates them before writing: bulletin number >= stored, OCR date ==
+//     message date, USD buy/sell == cb.gov.sy /fx/4 USD row, EUR mid / USD
+//     mid == Frankfurter EUR/USD within ~1%, all 21 currencies present,
+//     each mid between buy and sell. On ANY failure the last good central
+//     table stays untouched. The 10 cross-rate derived rows are never
+//     replaced (the bulletin publishes 21 currencies; JPY + CNY have no
+//     rows in the 28-currency table and are skipped).
+//     NOTE: tesseract eng+ara --psm 6 was tested and REJECTED — it misreads
+//     this image badly (codes garbled, decimal points dropped). Threshold +
+//     --psm 11 + TSV positions + two-pass cross-check is what actually works
+//     (verified on Bulletin 213: 21/21 rows correct after repair).
+//     Facebook route investigated 15 Nov 2026 and REJECTED (login wall +
+//     scanned images only, no public text). NEVER liratoday.net or
+//     syria-online.net (both proven wrong).
 //   Crypto: CoinGecko (Kraken fallback). FX: Frankfurter (ECB) + fixed Gulf pegs.
 //   Stocks: Yahoo Finance. Gulf indices: TradingView scanner (DFM:DFMGI, ADX:FADGI),
 //     cross-checked against Nukoud (DFM) + Trading Economics (ADX); QSE from Trading
@@ -39,8 +55,13 @@
 // Writes: data/live.json (only if valid and changed).
 
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+
+const execFileAsync = promisify(execFile);
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const LIVE_PATH = path.join(ROOT, 'data', 'live.json');
@@ -76,6 +97,27 @@ async function fetchText(url, { retries = 2, headers = {} } = {}) {
 async function fetchJSON(url, opts) {
   const text = await fetchText(url, opts);
   return JSON.parse(text);
+}
+
+// Binary fetch with the same retry/timeout behaviour (bulletin photos).
+async function fetchBinary(url, { retries = 2 } = {}) {
+  let lastErr;
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), TIMEOUT_MS);
+      const res = await fetch(url, { headers: { 'User-Agent': BROWSER_UA }, signal: ctrl.signal, redirect: 'follow' });
+      clearTimeout(timer);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const buf = Buffer.from(await res.arrayBuffer());
+      if (buf.length < 1000) throw new Error(`download too small (${buf.length} bytes)`);
+      return buf;
+    } catch (e) {
+      lastErr = e;
+      if (attempt < retries) await new Promise((r) => setTimeout(r, 1500 * (attempt + 1)));
+    }
+  }
+  throw lastErr;
 }
 
 function stripTags(html) {
@@ -251,6 +293,356 @@ async function fetchCentralBank() {
   return { bulletin, tickerDate, mids };
 }
 
+// --- Central Bank bulletin: FULL 21-currency table via Telegram OCR --------
+// The CB's official Telegram channel @SyCBOS (t.me/s/SyCBOS) posts the daily
+// bulletin as an image. The public channel page is server-rendered HTML — no
+// login, no JS. Pipeline: find the latest message containing the bulletin
+// phrase -> extract its date + photo URL -> download -> preprocess
+// (grayscale + 3x upscale + threshold) -> OCR (tesseract eng, --psm 11, TSV
+// output for word positions) -> parse rows by table geometry -> repair
+// single-digit OCR errors -> validate -> merge.
+// WHY THIS SHAPE (verified by direct testing 15 Nov 2026, Bulletin 213):
+// tesseract eng+ara --psm 6 FAILS badly on this image (codes misread,
+// decimal points dropped, digits wrong) — the table grid lines destroy its
+// line segmentation. Threshold + --psm 11 (sparse text) reads it nearly
+// perfectly, and TSV positions let the parser assign words to table cells
+// (name | code | mid | sell | buy) instead of trusting text order. Two
+// threshold passes (55% + 65%) cross-check each other: each fixes digit
+// errors the other makes (e.g. GBP sell 162.63 at 55% vs correct 162.69
+// at 65%). English currency NAMES identify rows (codes misread: CAD once
+// read as "CAO", DKK as "OKK"). Decimal points sometimes split ("316 88")
+// — adjacent number fragments in one cell are joined with a dot.
+// REPAIR: every bulletin row satisfies mid == (buy + sell) / 2 within 0.01
+// (verified on all 21 rows of Bulletin 213 — max deviation 0.005). A row
+// failing that identity is repaired by single-digit edits (substitute /
+// delete / insert); candidates must satisfy the identity, and the winner is
+// nearest to the stored row (bulletins move slowly), tie-broken by repairing
+// the least-confident word. An unrepairable row rejects the whole bulletin.
+// Bulletin column order: mid, sell, buy (الوسطي، المبيع، الشراء). JPY is per
+// 100 yen. Verified end-to-end 15 Nov 2026 (Bulletin 213, 12/11/2026).
+const TG_CHANNEL = 'https://t.me/s/SyCBOS';
+const BULLETIN_CODES = ['USD', 'EUR', 'GBP', 'JPY', 'CNY', 'TRY', 'SAR', 'QAR', 'AED', 'KWD', 'OMR', 'JOD', 'EGP', 'CHF', 'CAD', 'DKK', 'SEK', 'NOK', 'AUD', 'RUB', 'BHD'];
+const BULLETIN_PHRASE = 'النشرة الرسمية لأسعار الصرف';
+// English currency names (left table column) -> code. Names OCR far more
+// reliably than the 3-letter codes, so the name is the primary row
+// identifier and the code only a fallback.
+const BULLETIN_NAMES = {
+  USDOLLAR: 'USD', EURO: 'EUR', STERLINGPOUND: 'GBP', JAPANESEYEN: 'JPY',
+  CHINESEYUAN: 'CNY', TURKISHLIRA: 'TRY', SAUDIRIYAL: 'SAR', QATARIRIYAL: 'QAR',
+  UAEDIRHAM: 'AED', KUWAITIDINAR: 'KWD', BAHRAINIDINAR: 'BHD', OMANIRIYAL: 'OMR',
+  JORDANIANDINAR: 'JOD', EGYPTIANPOUND: 'EGP', SWISSFRANC: 'CHF', CANADIANDOLLAR: 'CAD',
+  DANISHKRONE: 'DKK', SWEDISHKRONA: 'SEK', NORWEGIANKRONE: 'NOK', AUSTRALIANDOLLAR: 'AUD',
+  RUSSIANRUBLE: 'RUB',
+};
+// Number-column x-ranges as fractions of the page width (the bulletin
+// template is fixed: name | code | mid | sell | buy | Arabic name).
+const NUM_COLS = [
+  { key: 'mid', lo: 0.365, hi: 0.52 },
+  { key: 'sell', lo: 0.52, hi: 0.677 },
+  { key: 'buy', lo: 0.677, hi: 0.8125 },
+];
+const NAME_HI = 0.26; // name column ends here (fraction of page width)
+const CODE_LO = 0.26, CODE_HI = 0.365; // code column
+
+async function fetchTelegramBulletin() {
+  let before = null;
+  for (let page = 0; page < 3; page++) {
+    const url = before ? `${TG_CHANNEL}?before=${before}` : TG_CHANNEL;
+    const html = await fetchText(url, { headers: { 'User-Agent': BROWSER_UA } });
+    // Slice the page at each message marker; messages run oldest-first, so
+    // walk the slices newest-first (reverse) and take the first bulletin.
+    const markers = [...html.matchAll(/data-post="SyCBOS\/(\d+)"/g)];
+    if (markers.length === 0) throw new Error('no Telegram messages found on channel page');
+    let oldestId = null;
+    for (let i = markers.length - 1; i >= 0; i--) {
+      const id = markers[i][1];
+      if (oldestId === null || Number(id) < Number(oldestId)) oldestId = id;
+      const start = markers[i].index;
+      const end = i + 1 < markers.length ? markers[i + 1].index : html.length;
+      const slice = html.slice(start, end);
+      if (!slice.includes(BULLETIN_PHRASE)) continue;
+      const photo = slice.match(/tgme_widget_message_photo_wrap[^>]*style="[^"]*background-image:url\('([^']+)'\)/);
+      if (!photo) continue; // bulletin text without a photo is useless for OCR
+      const dateM = slice.match(/التاريخ:(?:\s|&nbsp;|&#160;)*(\d{2})\/(\d{2})\/(\d{4})/);
+      let bulletinDate = null;
+      if (dateM) bulletinDate = `${dateM[3]}-${dateM[2]}-${dateM[1]}`;
+      if (!bulletinDate) {
+        // Fallback: the message's own post date (Damascus day).
+        const timeM = slice.match(/<time datetime="([^"]+)"/);
+        if (timeM) bulletinDate = new Date(timeM[1]).toLocaleDateString('en-CA', { timeZone: 'Asia/Damascus' });
+      }
+      if (!bulletinDate) throw new Error(`bulletin message ${id} has no usable date`);
+      return { messageId: id, bulletinDate, photoUrl: photo[1].replace(/&amp;/g, '&') };
+    }
+    // No bulletin with a photo on this page — page back to older messages.
+    before = oldestId;
+  }
+  throw new Error('no bulletin message with a photo found on the Telegram channel (3 pages)');
+}
+
+// OCR the bulletin photo with TWO threshold passes (55% + 65%) and merge
+// them. Each pass: ImageMagick grayscale + 3x upscale + threshold, then
+// tesseract (eng, --psm 11, TSV output for word positions). The two passes
+// cross-check each other — each fixes digit errors the other makes.
+// `storedRows` (code -> {mid, sell, buy} from the last good table) guides
+// the repair of misread rows; may be null. Returns
+// { bulletinNo, date, rows, repaired } where rows maps code -> {mid,sell,buy}
+// and repaired lists the codes that needed a repair. Throws if no pass
+// produces usable output. Temp files live in a throwaway dir that is always
+// cleaned up.
+async function ocrTelegramBulletin(photoUrl, storedRows) {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cb-bulletin-'));
+  try {
+    const rawPath = path.join(tmpDir, 'bulletin.jpg');
+    fs.writeFileSync(rawPath, await fetchBinary(photoUrl));
+    const passes = [];
+    for (const threshold of [55, 65]) {
+      const prepPath = path.join(tmpDir, `bulletin-t${threshold}.png`);
+      try {
+        await execFileAsync('convert', [rawPath, '-colorspace', 'Gray', '-resize', '300%', '-threshold', `${threshold}%`, prepPath], { timeout: 60000 });
+      } catch (e) {
+        log(`WARN: bulletin preprocessing (${threshold}%) failed (${e.message}) — skipping this pass`);
+        continue;
+      }
+      let tsv;
+      try {
+        ({ stdout: tsv } = await execFileAsync('tesseract', [prepPath, 'stdout', '-l', 'eng', '--psm', '11', 'tsv'], { timeout: 120000, maxBuffer: 10 * 1024 * 1024 }));
+      } catch (e) {
+        log(`WARN: bulletin OCR (${threshold}%) failed (${e.message}) — skipping this pass`);
+        continue;
+      }
+      if (!tsv || tsv.trim().length < 100) {
+        log(`WARN: bulletin OCR (${threshold}%) returned too little text — skipping this pass`);
+        continue;
+      }
+      try {
+        passes.push(parseBulletinTsv(tsv));
+      } catch (e) {
+        log(`WARN: bulletin TSV parse (${threshold}%) failed (${e.message}) — skipping this pass`);
+      }
+    }
+    if (passes.length === 0) throw new Error('both OCR passes failed');
+    return mergeBulletinPasses(passes, storedRows);
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+}
+
+// Parse one tesseract TSV pass into { bulletinNo, date, rows }. Rows are
+// found by table geometry: words are clustered into rows by y-centre, the
+// currency is identified by its English name (code as fallback), and the
+// three numbers are assigned to the mid/sell/buy columns by x-position.
+// A decimal point OCR'd as a space ("316 88") appears as two adjacent
+// number words in one cell — they are joined with a dot.
+function parseBulletinTsv(tsv) {
+  const words = [];
+  let pageW = 0, pageH = 0;
+  for (const line of tsv.split('\n')) {
+    if (!line || line.startsWith('level\t')) continue;
+    const c = line.split('\t');
+    if (c.length < 12) continue;
+    if (Number(c[0]) === 1) { pageW = Number(c[8]); pageH = Number(c[9]); continue; }
+    if (Number(c[0]) !== 5) continue;
+    const text = (c[11] || '').trim();
+    if (!text) continue;
+    words.push({ x: Number(c[6]), y: Number(c[7]), w: Number(c[8]), h: Number(c[9]), conf: Number(c[10]), text });
+  }
+  if (!pageW || words.length === 0) throw new Error('empty TSV output');
+  // Bulletin number + date from the header words.
+  let bulletinNo = null;
+  let date = null;
+  for (let i = 0; i < words.length; i++) {
+    if (words[i].text.toUpperCase().startsWith('BULLETIN') && bulletinNo === null) {
+      for (let j = i; j < Math.min(i + 6, words.length); j++) {
+        const m = words[j].text.match(/(\d{2,4})/);
+        if (m) {
+          const n = parseInt(m[1], 10);
+          if (n >= 100 && n <= 9999) { bulletinNo = n; break; }
+        }
+      }
+    }
+    if (!date) {
+      const dm = words[i].text.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
+      if (dm) date = `${dm[3]}-${dm[2]}-${dm[1]}`;
+    }
+  }
+  // Cluster words into rows by y-centre (row height is ~1/32 of page height).
+  const tol = Math.max(12, pageH * 0.0125);
+  const sorted = [...words].sort((a, b) => (a.y + a.h / 2) - (b.y + b.h / 2));
+  const clusters = [];
+  for (const w of sorted) {
+    const yc = w.y + w.h / 2;
+    const last = clusters[clusters.length - 1];
+    if (last && Math.abs(yc - last.yc) <= tol) {
+      last.words.push(w);
+      last.yc = (last.yc * (last.words.length - 1) + yc) / last.words.length;
+    } else {
+      clusters.push({ yc, words: [w] });
+    }
+  }
+  const rows = {};
+  for (const cl of clusters) {
+    const ws = [...cl.words].sort((a, b) => a.x - b.x);
+    const nameText = ws.filter(w => w.x / pageW < NAME_HI).map(w => w.text).join('').replace(/[^A-Za-z]/g, '').toUpperCase();
+    let code = BULLETIN_NAMES[nameText] || null;
+    if (!code) {
+      const cw = ws.find(w => w.x / pageW >= CODE_LO && w.x / pageW < CODE_HI && BULLETIN_CODES.includes(w.text.toUpperCase()));
+      if (cw) code = cw.text.toUpperCase();
+    }
+    if (!code) continue;
+    const vals = {};
+    const confs = {};
+    let complete = true;
+    for (const col of NUM_COLS) {
+      const nums = ws.filter(w => w.x / pageW >= col.lo && w.x / pageW < col.hi && /^\d+(\.\d+)?$/.test(w.text));
+      if (nums.length === 0) { complete = false; break; }
+      nums.sort((a, b) => a.x - b.x);
+      const joined = nums.length === 1 ? nums[0].text : nums[0].text + '.' + nums.slice(1).map(n => n.text).join('');
+      const v = num(joined);
+      if (v === null || v <= 0) { complete = false; break; }
+      vals[col.key] = v;
+      confs[col.key] = Math.min(...nums.map(n => n.conf));
+    }
+    if (!complete) continue;
+    rows[code] = { ...vals, _conf: confs };
+  }
+  return { bulletinNo, date, rows };
+}
+
+// Every bulletin row satisfies mid == (buy + sell) / 2 within 0.01 (verified
+// on all 21 rows of Bulletin 213 — max deviation 0.005). This identity is
+// the repair oracle: a misread row fails it, and a correct repair restores it.
+function midConsistent(v) {
+  return Math.abs(v.mid - (v.buy + v.sell) / 2) <= 0.01;
+}
+
+function rowDistanceToStored(v, stored) {
+  if (!stored) return 0;
+  return Math.abs(v.mid - stored.mid) + Math.abs(v.sell - stored.sell) + Math.abs(v.buy - stored.buy);
+}
+
+// Repair a row that fails the mid-average identity by single-digit edits
+// (substitute / delete / insert one digit in one of the three numbers).
+// A candidate must satisfy the identity; the winner is nearest to the stored
+// row (bulletins move slowly), tie-broken by repairing the least-confident
+// word. Returns the repaired row or null.
+function repairBulletinRow(v, stored) {
+  const fields = ['mid', 'sell', 'buy'];
+  const candidates = [];
+  for (const f of fields) {
+    const s = v[f].toFixed(2);
+    const digitIdx = [...s].map((ch, i) => (/\d/.test(ch) ? i : -1)).filter(i => i >= 0);
+    const edits = [];
+    for (const i of digitIdx) {
+      for (const d of '0123456789') {
+        if (s[i] === d) continue;
+        edits.push(s.slice(0, i) + d + s.slice(i + 1));
+      }
+      edits.push(s.slice(0, i) + s.slice(i + 1)); // deletion
+    }
+    for (let i = 0; i <= s.length; i++) {
+      if (i > 0 && s[i - 1] === '.') continue;
+      for (const d of '0123456789') edits.push(s.slice(0, i) + d + s.slice(i)); // insertion
+    }
+    for (const cand of edits) {
+      if (!/^\d+\.\d{2}$/.test(cand)) continue;
+      const nv = { ...v, [f]: parseFloat(cand) };
+      if (nv[f] <= 0) continue;
+      if (!midConsistent(nv)) continue;
+      candidates.push({ row: nv, dist: rowDistanceToStored(nv, stored), conf: (v._conf && v._conf[f]) ?? 100 });
+    }
+  }
+  if (candidates.length === 0) return null;
+  candidates.sort((a, b) => (a.dist - b.dist) || (a.conf - b.conf));
+  return candidates[0].row;
+}
+
+// Merge the two threshold passes. A row both passes agree on is accepted; a
+// row they disagree on takes the clean (unrepaired) reading if there is one,
+// else the reading nearest to the stored row; a row only one pass read is
+// accepted if it passes the mid-average identity (after repair). Bulletin
+// number/date come from the first pass that found them.
+function mergeBulletinPasses(passes, storedRows) {
+  const bulletinNo = passes.map(p => p.bulletinNo).find(n => n !== null && n !== undefined) ?? null;
+  const date = passes.map(p => p.date).find(d => d) ?? null;
+  const rows = {};
+  const repaired = [];
+  for (const code of BULLETIN_CODES) {
+    const stored = storedRows ? storedRows[code] : null;
+    const readings = passes.map(p => p.rows[code]).filter(Boolean);
+    if (readings.length === 0) continue;
+    const fixed = [];
+    for (const r of readings) {
+      if (midConsistent(r)) { fixed.push({ row: r, repaired: false }); continue; }
+      const rep = repairBulletinRow(r, stored);
+      if (rep) { fixed.push({ row: rep, repaired: true }); repaired.push(code); }
+    }
+    if (fixed.length === 0) continue; // unrepairable in both passes
+    if (fixed.length === 1) { rows[code] = stripConf(fixed[0].row); continue; }
+    const [a, b] = fixed;
+    const agree = ['mid', 'sell', 'buy'].every(k => Math.abs(a.row[k] - b.row[k]) <= 0.005);
+    if (agree) { rows[code] = stripConf(a.row); continue; }
+    if (a.repaired !== b.repaired) {
+      rows[code] = stripConf(a.repaired ? b.row : a.row);
+      log(`CB bulletin OCR: ${code} disagrees between passes — took the clean (unrepaired) reading`);
+    } else {
+      const pick = rowDistanceToStored(a.row, stored) <= rowDistanceToStored(b.row, stored) ? a : b;
+      rows[code] = stripConf(pick.row);
+      log(`CB bulletin OCR: ${code} disagrees between passes — took the reading nearest to stored`);
+    }
+  }
+  return { bulletinNo, date, rows, repaired: [...new Set(repaired)] };
+}
+
+function stripConf(row) {
+  const { _conf, ...rest } = row;
+  return rest;
+}
+
+// Zero-errors validation for an OCR'd bulletin. Returns a list of problems
+// (empty = valid). The USD row is checked against cb.gov.sy /fx/4 and the
+// EUR/USD cross against Frankfurter; if BOTH independent cross-checks are
+// unavailable, the bulletin is rejected — an OCR result must never be written
+// without at least one outside confirmation.
+function validateBulletinOCR(parsed, { storedNo, messageDate, cbUsd, eurUsd }) {
+  const problems = [];
+  if (!parsed.bulletinNo) problems.push('no bulletin number in OCR');
+  else if (storedNo && parsed.bulletinNo < storedNo) problems.push(`bulletin ${parsed.bulletinNo} older than stored ${storedNo}`);
+  if (!parsed.date) problems.push('no date in OCR');
+  else if (messageDate && parsed.date !== messageDate) problems.push(`OCR date ${parsed.date} != message date ${messageDate}`);
+  const missing = BULLETIN_CODES.filter((c) => !parsed.rows[c]);
+  if (missing.length > 0) problems.push(`missing currencies: ${missing.join(', ')}`);
+  for (const [code, r] of Object.entries(parsed.rows)) {
+    if (!(r.buy - 0.02 <= r.mid && r.mid <= r.sell + 0.02)) {
+      problems.push(`${code} mid ${r.mid} not between buy ${r.buy} and sell ${r.sell}`);
+    }
+    // Defense in depth: the repair stage guarantees this, but a row that
+    // somehow fails the mid-average identity must never be written.
+    if (!midConsistent(r)) {
+      problems.push(`${code} mid ${r.mid} != average of buy ${r.buy} and sell ${r.sell}`);
+    }
+  }
+  let crossChecked = false;
+  if (cbUsd && parsed.rows.USD) {
+    crossChecked = true;
+    const dBuy = relDiff(parsed.rows.USD.buy, cbUsd.usd_buy);
+    const dSell = relDiff(parsed.rows.USD.sell, cbUsd.usd_sell);
+    if (dBuy === null || dBuy > 0.001 || dSell === null || dSell > 0.001) {
+      problems.push(`USD mismatch vs cb.gov.sy: OCR ${parsed.rows.USD.buy}/${parsed.rows.USD.sell} vs site ${cbUsd.usd_buy}/${cbUsd.usd_sell}`);
+    }
+  }
+  if (eurUsd && parsed.rows.EUR && parsed.rows.USD) {
+    crossChecked = true;
+    const cross = parsed.rows.EUR.mid / parsed.rows.USD.mid;
+    const d = relDiff(cross, eurUsd);
+    if (d === null || d > 0.01) {
+      problems.push(`EUR/USD cross ${round(cross, 4)} vs Frankfurter ${round(eurUsd, 4)} (diff ${d !== null ? `${(d * 100).toFixed(2)}%` : 'n/a'})`);
+    }
+  }
+  if (!crossChecked) problems.push('no independent cross-check available (cb.gov.sy + Frankfurter both down)');
+  return problems;
+}
+
 // --- Crypto: CoinGecko (primary), Kraken fallback for BTC/ETH ------------
 const COINS = [
   ['bitcoin', 'BTC', 'Bitcoin'],
@@ -294,6 +686,15 @@ async function fetchFX() {
   const data = await fetchJSON('https://api.frankfurter.app/latest?from=USD');
   if (!data.rates || !data.rates.EUR) throw new Error('Frankfurter rates missing');
   return { date: data.date, rates: data.rates };
+}
+
+// Cached Frankfurter fetch: the CB OCR validation needs EUR/USD before the
+// FX section runs; the FX section then reuses the same response instead of
+// fetching twice. A failed fetch is never cached (the FX section retries).
+let fxCache = null;
+async function fetchFXCached() {
+  if (!fxCache) fxCache = await fetchFX();
+  return fxCache;
 }
 
 // --- Yahoo Finance chart (stocks, indices, oil, ETF proxy) ----------------
@@ -673,6 +1074,7 @@ async function main() {
   // NOT flagged stale; the last working-day bulletin stays current.
   const weekday = damascusWeekday();
   const isWeekend = weekday === 5 || weekday === 6;
+  let cbOcrApplied = false; // true when the Telegram-OCR table replaced the central rows
   if (isWeekend) {
     const weekendNote = 'Weekend (Fri–Sat) — no new bulletin expected; last working-day bulletin is current';
     markSource('central_bank', 'ok', null, weekendNote);
@@ -680,8 +1082,9 @@ async function main() {
     groupNotes.syria_central = weekendNote;
     log('CB bulletin: weekend — no new bulletin expected, keeping last working-day bulletin');
   } else {
+    let cb = null;
     try {
-      const cb = await fetchCentralBank();
+      cb = await fetchCentralBank();
       markSource('central_bank', 'ok');
       groupOk.syria_central = true;
       const storedDate = live.bulletin_date || '0000-00-00';
@@ -710,6 +1113,68 @@ async function main() {
       markSource('central_bank', 'stale', e);
       log(`WARN: central bank fetch failed (${e.message}) — keeping last good bulletin`);
     }
+
+    // Full 21-currency bulletin table via the CB's official Telegram channel
+    // (@SyCBOS): the bulletin posts there daily as an image (~12:30 Damascus
+    // on working days). Download -> preprocess -> OCR (two threshold passes,
+    // TSV positions) -> repair single-digit errors -> validate against
+    // cb.gov.sy USD + Frankfurter EUR/USD -> merge into the 18 published
+    // rows of the 28-currency table. On ANY failure the last good central
+    // table stays untouched.
+    try {
+      const tg = await fetchTelegramBulletin();
+      // Stored rows guide the OCR repair (bulletins move slowly); USD's
+      // stored mid is the average of its buy/sell.
+      const storedRows = {};
+      for (const row of live.syria.currencies) {
+        if (row.central_mid && row.central_sell && row.central_buy) {
+          storedRows[row.code] = { mid: row.central_mid, sell: row.central_sell, buy: row.central_buy };
+        }
+      }
+      if (live.syria.usd && live.syria.usd.central_buy && live.syria.usd.central_sell) {
+        storedRows.USD = { mid: (live.syria.usd.central_buy + live.syria.usd.central_sell) / 2, sell: live.syria.usd.central_sell, buy: live.syria.usd.central_buy };
+      }
+      const parsed = await ocrTelegramBulletin(tg.photoUrl, storedRows);
+      let eurUsd = null;
+      try {
+        const fxCheck = await fetchFXCached();
+        eurUsd = 1 / fxCheck.rates.EUR;
+      } catch (e) {
+        log(`WARN: Frankfurter unavailable for OCR cross-check (${e.message})`);
+      }
+      const storedNo = parseInt(live.bulletin, 10) || null;
+      const problems = validateBulletinOCR(parsed, {
+        storedNo,
+        messageDate: tg.bulletinDate,
+        cbUsd: cb ? cb.bulletin : null,
+        eurUsd,
+      });
+      if (problems.length > 0) throw new Error(`OCR validation failed: ${problems.join('; ')}`);
+      let updated = 0;
+      for (const row of live.syria.currencies) {
+        const o = parsed.rows[row.code];
+        if (!o) continue;
+        row.central_buy = o.buy;
+        row.central_sell = o.sell;
+        row.central_mid = o.mid;
+        row.central_derived = false;
+        updated++;
+      }
+      // JPY + CNY are published in the bulletin but have no rows in the
+      // 28-currency table — logged, not added (the table shape is fixed).
+      live.bulletin = String(parsed.bulletinNo);
+      if (parsed.date > (live.bulletin_date || '0000-00-00')) live.bulletin_date = parsed.date;
+      markSource('telegram_sycbos', 'ok');
+      groupOk.syria_central = true;
+      groupSource.syria_central = { source: 'Central Bank of Syria (Telegram @SyCBOS)', source_ar: 'مصرف سورية المركزي (تيليجرام @SyCBOS)' };
+      groupNotes.syria_central = `Bulletin ${parsed.bulletinNo} (${parsed.date}) — full 21-currency table via Telegram OCR`
+        + (parsed.repaired.length > 0 ? `; OCR cross-check repaired ${parsed.repaired.join(', ')}` : '');
+      cbOcrApplied = true;
+      log(`CB bulletin: Telegram OCR applied — bulletin ${parsed.bulletinNo} (${parsed.date}), ${updated} table rows updated${parsed.repaired.length > 0 ? `, repaired: ${parsed.repaired.join(', ')}` : ''}`);
+    } catch (e) {
+      markSource('telegram_sycbos', 'stale', e);
+      log(`WARN: Telegram bulletin OCR failed (${e.message}) — keeping last good central table`);
+    }
   }
 
   // --- Crypto ----------------------------------------------------------------
@@ -734,7 +1199,7 @@ async function main() {
 
   // --- FX --------------------------------------------------------------------
   try {
-    const fx = await fetchFX();
+    const fx = await fetchFXCached();
     markSource('frankfurter', 'ok');
     groupOk.fx = true;
     // Fixed Gulf pegs (Frankfurter/ECB does not publish SAR/AED/QAR).
@@ -1035,7 +1500,7 @@ async function main() {
   // --- Notes + sources ---------------------------------------------------------
   const noteParts = [
     `Parallel USD + gold: sp-today.com (Lira Today), cross-checked against Lirascope + SYPNow, fetched ${now}.`,
-    `Official USD: Central Bank of Syria bulletin (cb.gov.sy/fx/4), latest ${live.bulletin_date || 'n/a'}${isWeekend ? ' (weekend — no new bulletin expected)' : ''}.`,
+    `Official rates: Central Bank of Syria bulletin ${live.bulletin || 'n/a'} (${live.bulletin_date || 'n/a'})${cbOcrApplied ? ' — full 21-currency table via Telegram @SyCBOS OCR, cross-checked vs cb.gov.sy + Frankfurter' : ' — USD row from cb.gov.sy/fx/4'}${isWeekend ? ' (weekend — no new bulletin expected)' : ''}.`,
     'Crypto: CoinGecko (Kraken fallback).',
     'FX: Frankfurter/ECB; SAR/AED/QAR are fixed pegs.',
     'Stocks: Yahoo Finance. Gulf: TradingView (DFM/ADX) + Yahoo (TASI/Brent) + Trading Economics (QSE — single source, unverified).',
