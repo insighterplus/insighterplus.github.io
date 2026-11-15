@@ -714,7 +714,7 @@ async function fetchYahoo(symbol) {
   };
 }
 
-const YAHOO_STOCKS = ['^GSPC', '^NDX', '^DJI', 'AAPL', 'MSFT', 'NVDA', 'DX-Y.NYB'];
+const YAHOO_STOCKS = ['^GSPC', '^NDX', '^DJI', 'AAPL', 'MSFT', 'NVDA', 'DX-Y.NYB', '^FTSE', '^GDAXI', '^N225'];
 
 // --- Gulf: TradingView scanner (keyless JSON) — REAL DFM/ADX indices ------
 // GET /symbol?symbol=DFM:DFMGI&fields=close,change,change_abs,description
