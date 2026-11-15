@@ -699,22 +699,30 @@ async function fetchFXCached() {
   return fxCache;
 }
 
+// Run timestamp (same value main() uses for live.fetched_at, evaluated at
+// script start) — fallback for provider timestamps that are missing.
+const RUN_STARTED_AT = new Date().toISOString();
+
 // --- Yahoo Finance chart (stocks, indices, oil, ETF proxy) ----------------
 async function fetchYahoo(symbol) {
   const data = await fetchJSON(`https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?range=1d&interval=1d`);
   const result = data.chart && data.chart.result && data.chart.result[0];
   if (!result) throw new Error(`Yahoo: no data for ${symbol}`);
   const meta = result.meta;
+  const price = num(meta.regularMarketPrice);
+  const previousClose = num(meta.chartPreviousClose || meta.previousClose);
   return {
     symbol: meta.symbol,
-    price: num(meta.regularMarketPrice),
+    price,
+    change: (price === null || previousClose === null) ? null : round(price - previousClose, 2),
     change_pct: round(num(meta.regularMarketChangePercent), 2),
-    previous_close: num(meta.chartPreviousClose || meta.previousClose),
+    previous_close: previousClose,
     currency: meta.currency || 'USD',
+    asOf: meta.regularMarketTime ? new Date(meta.regularMarketTime * 1000).toISOString() : RUN_STARTED_AT,
   };
 }
 
-const YAHOO_STOCKS = ['^GSPC', '^NDX', '^DJI', 'AAPL', 'MSFT', 'NVDA', 'DX-Y.NYB', '^FTSE', '^GDAXI', '^N225'];
+const YAHOO_STOCKS = ['^GSPC', '^NDX', '^DJI', 'AAPL', 'MSFT', 'NVDA', 'GOOGL', 'AMZN', 'TSLA', 'DX-Y.NYB', '^FTSE', '^GDAXI', '^N225'];
 
 // --- Gulf: TradingView scanner (keyless JSON) — REAL DFM/ADX indices ------
 // GET /symbol?symbol=DFM:DFMGI&fields=close,change,change_abs,description
