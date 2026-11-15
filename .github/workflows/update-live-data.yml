@@ -1,0 +1,56 @@
+# Insighter+ live data — fully automatic, zero-touch.
+# Every 30 minutes this fetches real market data (Syria parallel rates + gold,
+# Central Bank bulletin, crypto, FX, metals, stocks, Gulf markets, Fear & Greed,
+# BBC headlines, economic calendar) and commits data/live.json to main.
+# The site (GitHub Pages) serves the fresh file automatically.
+# Self-healing: the updater keeps the last good figure for any source that
+# fails, never writes invalid data, and retries on the next run. No manual
+# steps exist anywhere in this loop.
+name: Update live data
+
+on:
+  schedule:
+    - cron: '*/30 * * * *'
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/update-live-data.yml'
+      - 'scripts/update-live-data.mjs'
+      - 'scripts/seed.json'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: live-data
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Fetch live data
+        run: node scripts/update-live-data.mjs
+
+      - name: Validate live.json
+        run: node -e "const d=require('./data/live.json'); if(!d.fetched_at||!d.syria?.usd?.parallel_sell) throw new Error('live.json invalid'); console.log('live.json valid, fetched_at:', d.fetched_at)"
+
+      - name: Commit if changed
+        run: |
+          git config user.name "insighter-plus-bot"
+          git config user.email "insighter-plus-bot@users.noreply.github.com"
+          git add data/live.json
+          if git diff --cached --quiet; then
+            echo "No changes to commit."
+          else
+            git commit -m "chore: update live market data ($(date -u +%Y-%m-%dT%H:%M:%SZ))"
+            git push
+          fi
