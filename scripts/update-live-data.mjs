@@ -1,9 +1,38 @@
-// Insighter+ live-data updater.
-// Runs in GitHub Actions every 30 minutes. Fully automatic, zero-touch:
-// every source is optional; on any failure the last good figure is kept,
-// the file is only written after validation, and the next run retries.
-// No Google services, no API keys, no accounts. All sources are free
-// public endpoints. All lira figures are NEW Syrian pounds (SYP).
+// Insighter+ live-data updater — Node 20, zero dependencies.
+// Runs on a GitHub Actions schedule, fetches public data, writes data/live.json.
+// No API keys, no Google services, no accounts.
+//
+// SOURCES (all optional — any failure keeps the last good value, never crashes):
+//   Syria parallel USD + gold: sp-today.com (Lira Today, PRIMARY) — cross-checked
+//     against Lirascope (lirascope.syria-cloud.sy, NEW domain) + SYPNow (sypnow.com).
+//     If the primary disagrees with a cross-check by >0.5%, the primary value is kept
+//     but the group is flagged stale and the divergence is recorded in notes.
+//     NEVER liratoday.net (stale/wrong figures: 139.50/140.20 on 15 Nov 2026).
+//   Official USD: Central Bank of Syria bulletin (cb.gov.sy/fx/4) + homepage ticker.
+//     Weekend rule: the Syrian weekend is Fri-Sat — no new bulletin is expected,
+//     so a missing bulletin on Fri/Sat is NOT a failure and is NOT flagged stale;
+//     the last working-day bulletin stays current. (Verified: bulletins 209 Sun 8 Nov,
+//     210 Mon 9 Nov, 211 Tue 10 Nov, 213 Thu 12 Nov; none Fri 13 / Sat 14 Nov.)
+//     Facebook route investigated 15 Nov 2026 and NOT implemented: the CB's official
+//     page (facebook.com/cb.gov.sy) posts the bulletin ONLY as a scanned image;
+//     unauthenticated requests hit a login wall (HTTP 400/403), there is no public
+//     text publication of the figures anywhere, and no Telegram mirror. The Actions
+//     runner cannot use Nexus's Facebook connector. Do NOT build Facebook/OCR hacks.
+//   Crypto: CoinGecko (Kraken fallback). FX: Frankfurter (ECB) + fixed Gulf pegs.
+//   Stocks: Yahoo Finance. Gulf indices: TradingView scanner (DFM:DFMGI, ADX:FADGI),
+//     cross-checked against Nukoud (DFM) + Trading Economics (ADX); QSE from Trading
+//     Economics ONLY (single source — flagged verified:false); TASI + Brent on Yahoo;
+//     the QAT ETF proxy survives only as a nested fallback reference inside the QAT
+//     entry. The old UAE ETF proxy key is dropped (it fed both DFM and ADX cards
+//     with the same ETF price — a bug).
+//   Metals spot: goldprice.dev (PRIMARY; computed_at is the last-update time),
+//     xaus.com spot (backup/cross-check, 1% tolerance), Yahoo futures (tertiary only).
+//     GC=F / SI=F keys keep their names (the site reads them) but now carry SPOT
+//     prices, with `basis` + `source` documenting provenance; full detail under
+//     XAU / XAG; 30-day gold candles from xaus history.
+//   Fear & Greed: alternative.me. News: BBC Business RSS (headlines + links only).
+//   Events: Forex Factory calendar feed (no better free feed exists).
+// All lira figures are NEW Syrian pounds (SYP).
 //
 // Usage: node scripts/update-live-data.mjs
 // Reads: data/live.json (previous state) or scripts/seed.json (first run).
@@ -18,18 +47,21 @@ const LIVE_PATH = path.join(ROOT, 'data', 'live.json');
 const SEED_PATH = path.join(ROOT, 'scripts', 'seed.json');
 const TIMEOUT_MS = 15000;
 const UA = 'Mozilla/5.0 (compatible; InsighterPlusBot/1.0; +https://insighterplus.github.io/)';
+// HTML scrapers (Lirascope, SYPNow, Trading Economics, Nukoud) get a plain
+// browser UA — some of them filter bot user-agents; the JSON APIs use the bot UA.
+const BROWSER_UA = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36';
 
 // ---------------------------------------------------------------- helpers
 
 function log(...args) { console.log(new Date().toISOString(), ...args); }
 
-async function fetchText(url, { retries = 2 } = {}) {
+async function fetchText(url, { retries = 2, headers = {} } = {}) {
   let lastErr;
   for (let attempt = 0; attempt <= retries; attempt++) {
     try {
       const ctrl = new AbortController();
       const timer = setTimeout(() => ctrl.abort(), TIMEOUT_MS);
-      const res = await fetch(url, { headers: { 'User-Agent': UA }, signal: ctrl.signal, redirect: 'follow' });
+      const res = await fetch(url, { headers: { 'User-Agent': UA, ...headers }, signal: ctrl.signal, redirect: 'follow' });
       clearTimeout(timer);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       return await res.text();
@@ -72,11 +104,33 @@ function damascusToday() {
   return new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Damascus' });
 }
 
+// Damascus weekday: 0=Sun .. 6=Sat (Fri=5, Sat=6 is the Syrian weekend).
+function damascusWeekday(date = new Date()) {
+  const day = new Intl.DateTimeFormat('en-US', { timeZone: 'Asia/Damascus', weekday: 'short' }).format(date);
+  return ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].indexOf(day);
+}
+
+// Relative difference between two values, or null if either is missing.
+function relDiff(a, b) {
+  if (a === null || a === undefined || b === null || b === undefined || (a + b) === 0) return null;
+  return Math.abs(a - b) / ((a + b) / 2);
+}
+
+// 9667.38 -> "9,667.38" (for matching Trading Economics display rows).
+function fmt2(v) {
+  return Number(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
 // ---------------------------------------------------------------- sources
 
-const SOURCES = {}; // name -> { status: 'ok'|'stale'|'failed', fetched_at, error? }
-function markSource(name, status, error) {
-  SOURCES[name] = { status, fetched_at: new Date().toISOString(), ...(error ? { error: String(error).slice(0, 200) } : {}) };
+const SOURCES = {}; // name -> { status: 'ok'|'stale'|'failed', fetched_at, error?, note? }
+function markSource(name, status, error, note) {
+  SOURCES[name] = {
+    status,
+    fetched_at: new Date().toISOString(),
+    ...(error ? { error: String(error).slice(0, 200) } : {}),
+    ...(note ? { note: String(note).slice(0, 300) } : {}),
+  };
 }
 
 // --- Syria: parallel rates + gold from sp-today.com (Lira Today) ---------
@@ -115,6 +169,65 @@ async function fetchSpToday() {
   const silverOunce = home.match(/أونصة الفضة\s+\$\s*([\d,]+\.?\d*)/);
 
   return { parallelUSD, gold, goldOunceUSD: ounce ? num(ounce[1]) : null, silverOunceUSD: silverOunce ? num(silverOunce[1]) : null, parallel };
+}
+
+// --- Syria: Lirascope (NEW domain) — co-primary + cross-check ------------------
+// https://lirascope.syria-cloud.sy/en embeds a structured `marketRates` JSON array
+// (29 currencies, buy/sell/mid + timestampUtc). Bound the slice at the
+// `effectiveRates` marker so the same currencies are not matched twice.
+// Fallback for USD: the visible hero Buy/Sell cards. Gold page gives a single
+// 21k MID price (no buy/sell spread), used for cross-checking only.
+async function fetchLirascope() {
+  const html = await fetchText('https://lirascope.syria-cloud.sy/en', { headers: { 'User-Agent': BROWSER_UA } });
+  let usd = null;
+  let table = {};
+  const marker = '\\"marketRates\\":[';
+  const start = html.indexOf(marker);
+  if (start >= 0) {
+    const endMarker = html.indexOf('\\"effectiveRates\\":', start);
+    const slice = html.slice(start, endMarker > start ? endMarker : start + 15000);
+    const usdMatch = slice.match(/\\"currency\\":\\"USD\\",\\"buy\\":([\d.]+),\\"sell\\":([\d.]+),\\"mid\\":([\d.]+),\\"timestampUtc\\":\\"([^\\]+)\\"/);
+    if (usdMatch) {
+      usd = { buy: num(usdMatch[1]), sell: num(usdMatch[2]), mid: num(usdMatch[3]), asOf: usdMatch[4] };
+    }
+    for (const m of slice.matchAll(/\\"currency\\":\\"([A-Z]{3})\\",\\"buy\\":([\d.]+),\\"sell\\":([\d.]+)/g)) {
+      const buy = num(m[2]); const sell = num(m[3]);
+      if (buy && sell) table[m[1]] = { buy, sell };
+    }
+  }
+  if (!usd || !usd.buy || !usd.sell) {
+    const buyM = html.match(/>Buy<\/div><div class="nums[^>]*>([\d,.]+)<\/div>/);
+    const sellM = html.match(/>Sell<\/div><div class="nums[^>]*>([\d,.]+)<\/div>/);
+    if (buyM && sellM) usd = { buy: num(buyM[1]), sell: num(sellM[1]) };
+  }
+  if (!usd || !usd.buy || !usd.sell) throw new Error('Lirascope USD not found');
+  if (Object.keys(table).length < 20) table = null; // table is a bonus; USD is the requirement
+  const goldHtml = await fetchText('https://lirascope.syria-cloud.sy/en/gold', { headers: { 'User-Agent': BROWSER_UA } });
+  let gold21kMid = null;
+  const big = goldHtml.match(/scope-big nums">([\d,]+)<\/span>/);
+  if (big) gold21kMid = num(big[1]);
+  if (!gold21kMid) {
+    const title = goldHtml.match(/21k Gram ([\d,]+) SYP/);
+    if (title) gold21kMid = num(title[1]);
+  }
+  return { usd, table, gold21kMid };
+}
+
+// --- Syria: SYPNow — second backup + cross-check -------------------------------
+// https://sypnow.com/en/currency/usd has labeled Buy/Sell Price cards; the gold
+// page gives a single 21k mid price (cross-check only).
+async function fetchSYPNow() {
+  const html = await fetchText('https://sypnow.com/en/currency/usd', { headers: { 'User-Agent': BROWSER_UA } });
+  const buyM = html.match(/Buy Price<\/div><div[^>]*>([\d,.]+)/);
+  const sellM = html.match(/Sell Price<\/div><div[^>]*>([\d,.]+)/);
+  if (!buyM || !sellM) throw new Error('SYPNow USD buy/sell not found');
+  const usd = { buy: num(buyM[1]), sell: num(sellM[1]) };
+  if (!usd.buy || !usd.sell) throw new Error('SYPNow USD values invalid');
+  const goldHtml = await fetchText('https://sypnow.com/en/gold', { headers: { 'User-Agent': BROWSER_UA } });
+  let gold21kMid = null;
+  const g = goldHtml.match(/one gram of 21K gold<\/h2><p[^>]*>([\d,.]+)/);
+  if (g) gold21kMid = num(g[1]);
+  return { usd, gold21kMid };
 }
 
 // --- Central Bank of Syria: official bulletin USD + ticker mids -----------
@@ -183,7 +296,7 @@ async function fetchFX() {
   return { date: data.date, rates: data.rates };
 }
 
-// --- Yahoo Finance chart (stocks, indices, metals, oil, ETF proxies) ------
+// --- Yahoo Finance chart (stocks, indices, oil, ETF proxy) ----------------
 async function fetchYahoo(symbol) {
   const data = await fetchJSON(`https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?range=1d&interval=1d`);
   const result = data.chart && data.chart.result && data.chart.result[0];
@@ -198,11 +311,105 @@ async function fetchYahoo(symbol) {
   };
 }
 
-const YAHOO_SYMBOLS = {
-  stocks: ['^GSPC', '^NDX', '^DJI', 'AAPL', 'MSFT', 'NVDA', 'DX-Y.NYB'],
-  metals: ['GC=F', 'SI=F'],
-  gulf: ['^TASI.SR', 'BZ=F', 'UAE', 'QAT'],
-};
+const YAHOO_STOCKS = ['^GSPC', '^NDX', '^DJI', 'AAPL', 'MSFT', 'NVDA', 'DX-Y.NYB'];
+
+// --- Gulf: TradingView scanner (keyless JSON) — REAL DFM/ADX indices ------
+// GET /symbol?symbol=DFM:DFMGI&fields=close,change,change_abs,description
+// Verified 15 Nov 2026: DFM 6,197.88 (= Nukoud), ADX 9,667.38 (= Trading Economics).
+async function fetchTradingView(symbol) {
+  const data = await fetchJSON(`https://scanner.tradingview.com/symbol?symbol=${encodeURIComponent(symbol)}&fields=close,change,change_abs,description`);
+  const price = num(data.close);
+  if (!price) throw new Error(`TradingView: no close for ${symbol}`);
+  const changePct = round(num(data.change), 2);
+  const changeAbs = round(num(data.change_abs), 2); // rounded: TV returns raw floats (e.g. -36.970000000000255)
+  return {
+    price,
+    change_pct: changePct,
+    change_abs: changeAbs,
+    previous_close: changeAbs !== null ? round(price - changeAbs, 2) : null,
+    description: data.description || null,
+  };
+}
+
+// --- Gulf: Trading Economics country pages — ADX cross-check/backup + QSE --
+// The price comes from the embedded TEChartsMeta JSON ("symbol":"ADSMI:IND",
+// "last":9667.38); the day change comes from the visible table row, found by
+// searching the stripped text for the formatted value ("9,667.38 -58.34 -0.60%").
+async function fetchTradingEconomics(url, teSymbol) {
+  const html = await fetchText(url, { headers: { 'User-Agent': BROWSER_UA } });
+  const m = html.match(new RegExp(`"symbol":"${teSymbol}"[^}]{0,400}"last":([\\d.]+)`));
+  if (!m) throw new Error(`Trading Economics: ${teSymbol} not found`);
+  const price = round(num(m[1]), 2); // rounded: TE's JSON last is a raw float (e.g. 10028.37988); the displayed row is 2dp
+  if (!price) throw new Error(`Trading Economics: bad price for ${teSymbol}`);
+  const text = stripTags(html);
+  const escaped = fmt2(price).replace(/\./g, '\\.');
+  const row = text.match(new RegExp(`${escaped}\\s+(-?[\\d,]+\\.[\\d]{2})\\s+(-?[\\d.]+)%`));
+  const changeAbs = row ? round(num(row[1]), 2) : null;
+  const changePct = row ? round(num(row[2]), 2) : null;
+  return {
+    price,
+    change_abs: changeAbs,
+    change_pct: changePct,
+    previous_close: changeAbs !== null ? round(price - changeAbs, 2) : null,
+  };
+}
+
+// --- Gulf: Nukoud — DFM cross-check/backup --------------------------------
+// https://www.nukoud.com/markets/DFM-AE-INDEX — price in a `price-lg` span,
+// change in the line right after it: "-36.97 (-0.59%) today".
+async function fetchNukoudDFM() {
+  const html = await fetchText('https://www.nukoud.com/markets/DFM-AE-INDEX', { headers: { 'User-Agent': BROWSER_UA } });
+  const m = html.match(/price-lg[^>]*>([\d,.]+)<\/span>/);
+  if (!m) throw new Error('Nukoud DFM price not found');
+  const price = num(m[1]);
+  if (!price) throw new Error('Nukoud DFM price invalid');
+  const tail = html.slice(m.index, m.index + 400);
+  const ch = tail.match(/(-?[\d,.]+)\s*<!-- -->\(<!-- -->(-?[\d.]+)%/);
+  const changeAbs = ch ? round(num(ch[1]), 2) : null;
+  const changePct = ch ? round(num(ch[2]), 2) : null;
+  return {
+    price,
+    change_abs: changeAbs,
+    change_pct: changePct,
+    previous_close: changeAbs !== null ? round(price - changeAbs, 2) : null,
+  };
+}
+
+// --- Metals spot: goldprice.dev (PRIMARY) ----------------------------------
+// GET /v1/prices — symbols array, XAU/XAG per troy ounce in USD, with
+// computed_at (used as the group's last-update time) + is_stale. If the
+// provider flags its own data stale, the metal falls through to xaus.
+async function fetchGoldPriceDev() {
+  const data = await fetchJSON('https://api.goldprice.dev/v1/prices');
+  if (!data.symbols || !Array.isArray(data.symbols)) throw new Error('goldprice.dev: bad response');
+  const find = (sym) => data.symbols.find((s) => s.symbol === sym && s.quote_currency === 'USD' && s.unit === 'troy_ounce');
+  const xau = find('XAU');
+  const xag = find('XAG');
+  if (!xau || !num(xau.price)) throw new Error('goldprice.dev: XAU/USD missing');
+  return {
+    xau: { price: num(xau.price), computed_at: xau.computed_at || null, is_stale: !!xau.is_stale },
+    xag: xag && num(xag.price) ? { price: num(xag.price), computed_at: xag.computed_at || null, is_stale: !!xag.is_stale } : null,
+  };
+}
+
+// --- Metals spot: xaus.com (backup/cross-check + 30-day history) -----------
+// GET /api/v1/spot — spot_usd_oz + silver_usd_oz + updated_at.
+// GET /api/v1/history?days=30 — 30 daily candles {d, c, h, l}.
+async function fetchXausSpot() {
+  const data = await fetchJSON('https://xaus.com/api/v1/spot');
+  const xau = num(data.spot_usd_oz ?? (data.xau && data.xau.price));
+  const xag = num(data.silver_usd_oz);
+  if (!xau) throw new Error('xaus: spot price missing');
+  return { xau, xag, updated_at: data.updated_at || data.price_as_of || null, stale: !!data.stale };
+}
+
+async function fetchXausHistory() {
+  const data = await fetchJSON('https://xaus.com/api/v1/history?days=30');
+  if (!data.points || !Array.isArray(data.points) || data.points.length < 2) throw new Error('xaus history: too few points');
+  return data.points
+    .map((p) => ({ date: p.d, close: num(p.c), high: num(p.h), low: num(p.l) }))
+    .filter((p) => p.date && p.close);
+}
 
 // --- Fear & Greed ----------------------------------------------------------
 async function fetchFearGreed() {
@@ -271,8 +478,8 @@ const GROUP_SOURCES = {
   crypto: { source: 'CoinGecko', source_ar: 'كوين غيكو' },
   fx: { source: 'Frankfurter / ECB', source_ar: 'فرانكفورتر / البنك المركزي الأوروبي' },
   stocks: { source: 'Yahoo Finance', source_ar: 'ياهو فاينانس' },
-  metals: { source: 'Yahoo Finance', source_ar: 'ياهو فاينانس' },
-  gulf: { source: 'Yahoo Finance', source_ar: 'ياهو فاينانس' },
+  metals: { source: 'goldprice.dev — gold & silver spot', source_ar: 'غولد برايس — الذهب والفضة الفوري' },
+  gulf: { source: 'TradingView · Yahoo Finance · Trading Economics', source_ar: 'تريدينغ فيو · ياهو فاينانس · تريدينغ إيكونوميكس' },
   fear_greed: { source: 'alternative.me — Fear & Greed Index', source_ar: 'مؤشر الخوف والطمع' },
   news: { source: 'BBC Business', source_ar: 'بي بي سي للأعمال' },
   events: { source: 'Forex Factory', source_ar: 'فوريكس فاكتوري' },
@@ -304,6 +511,8 @@ function validate(live) {
   return problems;
 }
 
+// ---------------------------------------------------------------- main
+
 async function main() {
   const prev = loadPrevious();
   if (!prev) {
@@ -318,77 +527,189 @@ async function main() {
   const live = JSON.parse(JSON.stringify(prev));
   live.fetched_at = now;
   const groupOk = {}; // group key -> true when its fetch succeeded this run
+  const groupSource = {}; // group key -> {source, source_ar} override for this run
+  const groupFetchedAt = {}; // group key -> ISO timestamp override (provider's own time)
+  const groupNotes = {}; // group key -> note attached to the group meta entry
+  const divergenceNotes = []; // cross-check divergences, appended to live.notes
 
-  // --- Syria ---------------------------------------------------------------
-  try {
-    const sp = await fetchSpToday();
-    markSource('sp_today', 'ok');
-    groupOk.syria_parallel = true;
-    groupOk.syria_gold = true;
-    live.syria.usd.parallel_buy = sp.parallelUSD.buy;
-    live.syria.usd.parallel_sell = sp.parallelUSD.sell;
-    // Change vs yesterday: compare against the last history entry dated
-    // BEFORE today (not the last run, which may already be today's value).
-    const historyBefore = (Array.isArray(live.syria.history) ? live.syria.history : []).filter((h) => h.date < today);
-    const yesterdayGold = historyBefore.length ? historyBefore[historyBefore.length - 1].gold21k_sell : null;
-    live.syria.gold21k = { buy: sp.gold.gold21k.buy, sell: sp.gold.gold21k.sell, change_vs_yesterday: yesterdayGold ? round(sp.gold.gold21k.sell - yesterdayGold) : null };
-    if (sp.gold.gold24k) live.syria.gold24k = { buy: sp.gold.gold24k.buy, sell: sp.gold.gold24k.sell, usd_per_gram: sp.gold.gold24k.usd_per_gram };
-    if (sp.gold.gold18k) live.syria.gold18k = { buy: sp.gold.gold18k.buy, sell: sp.gold.gold18k.sell, usd_per_gram: sp.gold.gold18k.usd_per_gram };
-    if (sp.goldOunceUSD) live.syria.gold_ounce_usd = sp.goldOunceUSD;
-    if (sp.silverOunceUSD) live.syria.silver_ounce_usd = sp.silverOunceUSD;
-    // Parallel rates for the 28-currency table. IQD is skipped: sp-today
-    // rounds it to 0.10/0.10, losing the precision of the last verified value.
-    for (const row of live.syria.currencies) {
-      if (row.code === 'IQD') continue;
-      const p = sp.parallel[row.code];
-      if (p && p.buy !== p.sell) { row.parallel_buy = p.buy; row.parallel_sell = p.sell; }
+  // --- Syria: parallel USD + gold -------------------------------------------
+  // Three sources, priority order: sp-today.com (Lira Today, PRIMARY) ->
+  // Lirascope (co-primary) -> SYPNow (second backup). Lirascope + SYPNow also
+  // cross-validate the primary: if they disagree with it by more than 0.5% on
+  // USD buy/sell or the 21k gold mid, the primary value is kept but the group
+  // is flagged stale and the divergence is recorded in notes — a disputed
+  // figure is never written silently. NEVER liratoday.net (stale/wrong).
+  const DIVERGE_PCT = 0.005;
+  let sp = null;
+  let ls = null;
+  let sn = null;
+  try { sp = await fetchSpToday(); markSource('sp_today', 'ok'); }
+  catch (e) { markSource('sp_today', 'stale', e); log(`WARN: sp-today failed (${e.message})`); }
+  try { ls = await fetchLirascope(); markSource('lirascope', 'ok'); }
+  catch (e) { markSource('lirascope', 'stale', e); log(`WARN: Lirascope failed (${e.message})`); }
+  try { sn = await fetchSYPNow(); markSource('sypnow', 'ok'); }
+  catch (e) { markSource('sypnow', 'stale', e); log(`WARN: SYPNow failed (${e.message})`); }
+
+  const usdSources = [];
+  if (sp) usdSources.push({ name: 'sp-today', key: 'sp_today', usd: sp.parallelUSD });
+  if (ls) usdSources.push({ name: 'lirascope', key: 'lirascope', usd: ls.usd });
+  if (sn) usdSources.push({ name: 'sypnow', key: 'sypnow', usd: sn.usd });
+
+  if (usdSources.length > 0) {
+    const primary = usdSources[0];
+    // Cross-validation against every other available source.
+    let usdDiverged = false;
+    const usdDivergenceDetails = [];
+    for (const other of usdSources.slice(1)) {
+      const dBuy = relDiff(primary.usd.buy, other.usd.buy);
+      const dSell = relDiff(primary.usd.sell, other.usd.sell);
+      if ((dBuy !== null && dBuy > DIVERGE_PCT) || (dSell !== null && dSell > DIVERGE_PCT)) {
+        usdDiverged = true;
+        usdDivergenceDetails.push(`${other.name} USD ${other.usd.buy}/${other.usd.sell} vs ${primary.name} ${primary.usd.buy}/${primary.usd.sell}`);
+      }
     }
-    // History: one entry per day for the 30-day trend.
+    live.syria.usd.parallel_buy = primary.usd.buy;
+    live.syria.usd.parallel_sell = primary.usd.sell;
+    // Gold (buy/sell) comes ONLY from sp-today — Lirascope/SYPNow publish a
+    // single mid price, which cross-checks the sp-today mid but cannot
+    // substitute for the buy/sell spread.
+    const spMid = sp ? (sp.gold.gold21k.buy + sp.gold.gold21k.sell) / 2 : null;
+    let goldDiverged = false;
+    const goldDivergenceDetails = [];
+    for (const [name, mid] of [['lirascope', ls ? ls.gold21kMid : null], ['sypnow', sn ? sn.gold21kMid : null]]) {
+      if (spMid !== null && mid !== null) {
+        const d = relDiff(spMid, mid);
+        if (d !== null && d > DIVERGE_PCT) {
+          goldDiverged = true;
+          goldDivergenceDetails.push(`${name} 21k mid ${mid} vs sp-today mid ${round(spMid, 2)}`);
+        }
+      }
+    }
+    if (sp) {
+      // Change vs yesterday: compare against the last history entry dated
+      // BEFORE today (not the last run, which may already be today's value).
+      const historyBefore = (Array.isArray(live.syria.history) ? live.syria.history : []).filter((h) => h.date < today);
+      const yesterdayGold = historyBefore.length ? historyBefore[historyBefore.length - 1].gold21k_sell : null;
+      live.syria.gold21k = { buy: sp.gold.gold21k.buy, sell: sp.gold.gold21k.sell, change_vs_yesterday: yesterdayGold ? round(sp.gold.gold21k.sell - yesterdayGold) : null };
+      if (sp.gold.gold24k) live.syria.gold24k = { buy: sp.gold.gold24k.buy, sell: sp.gold.gold24k.sell, usd_per_gram: sp.gold.gold24k.usd_per_gram };
+      if (sp.gold.gold18k) live.syria.gold18k = { buy: sp.gold.gold18k.buy, sell: sp.gold.gold18k.sell, usd_per_gram: sp.gold.gold18k.usd_per_gram };
+      if (sp.goldOunceUSD) live.syria.gold_ounce_usd = sp.goldOunceUSD;
+      if (sp.silverOunceUSD) live.syria.silver_ounce_usd = sp.silverOunceUSD;
+    }
+    // Parallel rates for the 28-currency table: sp-today primary; Lirascope
+    // when sp-today is down. IQD is skipped from sp-today (it rounds it to
+    // 0.10/0.10, losing precision) — instead IQD is always filled from
+    // Lirascope when available, since it publishes IQD properly (0.0977/0.0992).
+    const tableSource = sp ? sp.parallel : (ls && ls.table ? ls.table : null);
+    const tableIsLirascope = !sp && !!tableSource;
+    if (tableSource) {
+      for (const row of live.syria.currencies) {
+        if (row.code === 'IQD' && !tableIsLirascope) continue;
+        const p = tableSource[row.code];
+        if (p && p.buy !== p.sell) { row.parallel_buy = p.buy; row.parallel_sell = p.sell; }
+      }
+    }
+    if (ls && ls.table && ls.table.IQD) {
+      const iqdRow = live.syria.currencies.find((r) => r.code === 'IQD');
+      if (iqdRow) { iqdRow.parallel_buy = ls.table.IQD.buy; iqdRow.parallel_sell = ls.table.IQD.sell; }
+    }
+    // History: one entry per day for the 30-day trend. The USD part updates
+    // whenever a fresh USD is available; the gold part only when sp-today
+    // gold refreshed (a mid price is not a sell price).
     const history = Array.isArray(live.syria.history) ? live.syria.history : [];
     const lastEntry = history[history.length - 1];
+    const freshGoldSell = sp ? sp.gold.gold21k.sell : null;
     if (!lastEntry || lastEntry.date !== today) {
-      history.push({ date: today, usd_parallel_sell: sp.parallelUSD.sell, gold21k_sell: sp.gold.gold21k.sell });
+      history.push({ date: today, usd_parallel_sell: primary.usd.sell, gold21k_sell: freshGoldSell !== null ? freshGoldSell : (lastEntry ? lastEntry.gold21k_sell : null) });
       live.syria.history = history.slice(-30);
     } else {
-      lastEntry.usd_parallel_sell = sp.parallelUSD.sell;
-      lastEntry.gold21k_sell = sp.gold.gold21k.sell;
+      lastEntry.usd_parallel_sell = primary.usd.sell;
+      if (freshGoldSell !== null) lastEntry.gold21k_sell = freshGoldSell;
     }
     live.syria.last_updated = today;
-  } catch (e) {
-    markSource('sp_today', 'stale', e);
-    log(`WARN: sp-today failed (${e.message}) — keeping last good Syria figures`);
+    // Cross-check record: what each source said, and whether they agreed.
+    live.syria.cross_check = {
+      usd: {
+        primary: primary.key,
+        sp_today: sp ? { buy: sp.parallelUSD.buy, sell: sp.parallelUSD.sell } : null,
+        lirascope: ls ? { buy: ls.usd.buy, sell: ls.usd.sell } : null,
+        sypnow: sn ? { buy: sn.usd.buy, sell: sn.usd.sell } : null,
+        diverged: usdDiverged,
+      },
+      gold21k_mid: {
+        sp_today: spMid !== null ? round(spMid, 2) : null,
+        lirascope: ls ? ls.gold21kMid : null,
+        sypnow: sn ? sn.gold21kMid : null,
+        diverged: goldDiverged,
+      },
+      checked_at: now,
+    };
+    // Group status: a divergence keeps the primary value but flags the group
+    // stale (with the original fetched_at) so the site never shows a disputed
+    // figure as freshly verified.
+    if (usdDiverged) {
+      groupNotes.syria_parallel = `Cross-check divergence: ${usdDivergenceDetails.join('; ')}`;
+      divergenceNotes.push(`Parallel USD: ${usdDivergenceDetails.join('; ')}`);
+    } else {
+      groupOk.syria_parallel = true;
+    }
+    if (goldDiverged) {
+      groupNotes.syria_gold = `Cross-check divergence: ${goldDivergenceDetails.join('; ')}`;
+      divergenceNotes.push(`Gold 21k: ${goldDivergenceDetails.join('; ')}`);
+    } else if (sp) {
+      groupOk.syria_gold = true;
+    }
+    // Attribution: when the primary is down, the group is honestly attributed
+    // to the source that actually supplied the value.
+    if (primary.key === 'lirascope') groupSource.syria_parallel = { source: 'Lirascope (lirascope.syria-cloud.sy)', source_ar: 'ليراسكوب' };
+    else if (primary.key === 'sypnow') groupSource.syria_parallel = { source: 'SYPNow (sypnow.com)', source_ar: 'SYPNow' };
+  } else {
+    log('WARN: all three Syria sources failed — keeping last good Syria figures');
   }
 
   // --- Central Bank bulletin ------------------------------------------------
-  try {
-    const cb = await fetchCentralBank();
-    markSource('central_bank', 'ok');
+  // Weekend rule: the Syrian weekend is Fri-Sat — the Central Bank publishes
+  // no bulletin, so a missing bulletin on those days is NOT a failure and is
+  // NOT flagged stale; the last working-day bulletin stays current.
+  const weekday = damascusWeekday();
+  const isWeekend = weekday === 5 || weekday === 6;
+  if (isWeekend) {
+    const weekendNote = 'Weekend (Fri–Sat) — no new bulletin expected; last working-day bulletin is current';
+    markSource('central_bank', 'ok', null, weekendNote);
     groupOk.syria_central = true;
-    const storedDate = live.bulletin_date || '0000-00-00';
-    live.syria.usd.central_buy = cb.bulletin.usd_buy;
-    live.syria.usd.central_sell = cb.bulletin.usd_sell;
-    if (cb.bulletin.date > storedDate) live.bulletin_date = cb.bulletin.date;
-    // Ticker mids only apply when the ticker is at least as new as the
-    // stored bulletin (the site ticker can lag the published bulletin).
-    if (cb.tickerDate && cb.tickerDate >= storedDate) {
-      for (const row of live.syria.currencies) {
-        const mid = cb.mids[row.code];
-        if (!mid || row.code === 'USD') continue;
-        const prevMid = row.central_mid;
-        if (prevMid && prevMid > 0) {
-          const buyRatio = row.central_buy / prevMid;
-          const sellRatio = row.central_sell / prevMid;
-          row.central_buy = round(mid * buyRatio, 2);
-          row.central_sell = round(mid * sellRatio, 2);
-          row.central_mid = mid;
-          row.central_derived = true;
+    groupNotes.syria_central = weekendNote;
+    log('CB bulletin: weekend — no new bulletin expected, keeping last working-day bulletin');
+  } else {
+    try {
+      const cb = await fetchCentralBank();
+      markSource('central_bank', 'ok');
+      groupOk.syria_central = true;
+      const storedDate = live.bulletin_date || '0000-00-00';
+      live.syria.usd.central_buy = cb.bulletin.usd_buy;
+      live.syria.usd.central_sell = cb.bulletin.usd_sell;
+      if (cb.bulletin.date > storedDate) live.bulletin_date = cb.bulletin.date;
+      // Ticker mids only apply when the ticker is at least as new as the
+      // stored bulletin (the site ticker can lag the published bulletin).
+      if (cb.tickerDate && cb.tickerDate >= storedDate) {
+        for (const row of live.syria.currencies) {
+          const mid = cb.mids[row.code];
+          if (!mid || row.code === 'USD') continue;
+          const prevMid = row.central_mid;
+          if (prevMid && prevMid > 0) {
+            const buyRatio = row.central_buy / prevMid;
+            const sellRatio = row.central_sell / prevMid;
+            row.central_buy = round(mid * buyRatio, 2);
+            row.central_sell = round(mid * sellRatio, 2);
+            row.central_mid = mid;
+            row.central_derived = true;
+          }
         }
+        if (cb.tickerDate > storedDate) live.bulletin_date = cb.tickerDate;
       }
-      if (cb.tickerDate > storedDate) live.bulletin_date = cb.tickerDate;
+    } catch (e) {
+      markSource('central_bank', 'stale', e);
+      log(`WARN: central bank fetch failed (${e.message}) — keeping last good bulletin`);
     }
-  } catch (e) {
-    markSource('central_bank', 'stale', e);
-    log(`WARN: central bank fetch failed (${e.message}) — keeping last good bulletin`);
   }
 
   // --- Crypto ----------------------------------------------------------------
@@ -424,30 +745,239 @@ async function main() {
     log(`WARN: Frankfurter failed (${e.message}) — keeping last good FX`);
   }
 
-  // --- Yahoo: stocks / metals / Gulf ----------------------------------------
-  for (const [section, symbols] of Object.entries(YAHOO_SYMBOLS)) {
-    if (!live[section]) live[section] = {};
-    for (const symbol of symbols) {
+  // --- Yahoo: stocks ----------------------------------------------------------
+  if (!live.stocks) live.stocks = {};
+  for (const symbol of YAHOO_STOCKS) {
+    try {
+      live.stocks[symbol] = await fetchYahoo(symbol);
+      markSource(`yahoo:${symbol}`, 'ok');
+      groupOk.stocks = true;
+    } catch (e) {
+      markSource(`yahoo:${symbol}`, 'stale', e);
+      log(`WARN: Yahoo ${symbol} failed (${e.message}) — keeping last good value`);
+    }
+  }
+
+  // --- Gulf: real indices -----------------------------------------------------
+  if (!live.gulf) live.gulf = {};
+  // The old UAE ETF proxy key is dropped: it fed both the DFM and ADX cards
+  // with the same ETF price. DFM/ADX now have their own real index keys.
+  delete live.gulf.UAE;
+
+  // TASI + Brent stay on Yahoo (they are the real benchmarks there).
+  for (const [symbol, label] of [['^TASI.SR', 'Saudi Tadawul (TASI)'], ['BZ=F', 'Brent crude']]) {
+    try {
+      const row = await fetchYahoo(symbol);
+      row.label = label;
+      if (row.price && row.previous_close) row.change_abs = round(row.price - row.previous_close, 2);
+      live.gulf[symbol] = row;
+      markSource(`yahoo:${symbol}`, 'ok');
+      groupOk.gulf = true;
+    } catch (e) {
+      markSource(`yahoo:${symbol}`, 'stale', e);
+      log(`WARN: Yahoo ${symbol} failed (${e.message}) — keeping last good value`);
+    }
+  }
+
+  // DFM: TradingView primary; Nukoud cross-checks (and backs up) it.
+  let dfm = null;
+  let dfmNote = null;
+  try {
+    const tv = await fetchTradingView('DFM:DFMGI');
+    markSource('tradingview_dfm', 'ok');
+    dfm = { symbol: 'DFMGI', price: tv.price, change_pct: tv.change_pct, change_abs: tv.change_abs, previous_close: tv.previous_close, currency: 'AED', label: 'Dubai Financial Market (DFM)', source: 'TradingView' };
+    try {
+      const nk = await fetchNukoudDFM();
+      markSource('nukoud_dfm', 'ok');
+      const d = relDiff(tv.price, nk.price);
+      if (d !== null && d <= 0.005) {
+        dfm.verified = true;
+      } else {
+        dfm.verified = false;
+        dfmNote = `Nukoud cross-check disagrees: ${nk.price} vs TradingView ${tv.price}`;
+        divergenceNotes.push(`DFM: ${dfmNote}`);
+      }
+    } catch (e2) {
+      markSource('nukoud_dfm', 'stale', e2);
+      dfm.verified = !!(live.gulf.DFMGI && live.gulf.DFMGI.verified); // carry forward
+      dfmNote = 'Nukoud cross-check unavailable this run';
+    }
+  } catch (e) {
+    markSource('tradingview_dfm', 'stale', e);
+    try {
+      const nk = await fetchNukoudDFM();
+      markSource('nukoud_dfm', 'ok');
+      dfm = { symbol: 'DFMGI', price: nk.price, change_pct: nk.change_pct, change_abs: nk.change_abs, previous_close: nk.previous_close, currency: 'AED', label: 'Dubai Financial Market (DFM)', source: 'Nukoud', verified: false };
+      dfmNote = 'TradingView failed — Nukoud backup in use (unverified)';
+    } catch (e2) {
+      markSource('nukoud_dfm', 'stale', e2);
+      log(`WARN: DFM failed on both sources (${e.message}; ${e2.message}) — keeping last good value`);
+    }
+  }
+  if (dfm) {
+    if (dfmNote) dfm.note = dfmNote;
+    live.gulf.DFMGI = dfm;
+    groupOk.gulf = true;
+  }
+
+  // ADX: TradingView primary; Trading Economics cross-checks (and backs up) it.
+  let adx = null;
+  let adxNote = null;
+  try {
+    const tv = await fetchTradingView('ADX:FADGI');
+    markSource('tradingview_adx', 'ok');
+    adx = { symbol: 'FADGI', price: tv.price, change_pct: tv.change_pct, change_abs: tv.change_abs, previous_close: tv.previous_close, currency: 'AED', label: 'Abu Dhabi Securities Exchange (ADX)', source: 'TradingView' };
+    try {
+      const te = await fetchTradingEconomics('https://tradingeconomics.com/united-arab-emirates/stock-market', 'ADSMI:IND');
+      markSource('tradingeconomics_adx', 'ok');
+      const d = relDiff(tv.price, te.price);
+      if (d !== null && d <= 0.005) {
+        adx.verified = true;
+      } else {
+        adx.verified = false;
+        adxNote = `Trading Economics cross-check disagrees: ${te.price} vs TradingView ${tv.price}`;
+        divergenceNotes.push(`ADX: ${adxNote}`);
+      }
+    } catch (e2) {
+      markSource('tradingeconomics_adx', 'stale', e2);
+      adx.verified = !!(live.gulf.FADGI && live.gulf.FADGI.verified); // carry forward
+      adxNote = 'Trading Economics cross-check unavailable this run';
+    }
+  } catch (e) {
+    markSource('tradingview_adx', 'stale', e);
+    try {
+      const te = await fetchTradingEconomics('https://tradingeconomics.com/united-arab-emirates/stock-market', 'ADSMI:IND');
+      markSource('tradingeconomics_adx', 'ok');
+      adx = { symbol: 'FADGI', price: te.price, change_pct: te.change_pct, change_abs: te.change_abs, previous_close: te.previous_close, currency: 'AED', label: 'Abu Dhabi Securities Exchange (ADX)', source: 'Trading Economics', verified: false };
+      adxNote = 'TradingView failed — Trading Economics backup in use (unverified)';
+    } catch (e2) {
+      markSource('tradingeconomics_adx', 'stale', e2);
+      log(`WARN: ADX failed on both sources (${e.message}; ${e2.message}) — keeping last good value`);
+    }
+  }
+  if (adx) {
+    if (adxNote) adx.note = adxNote;
+    live.gulf.FADGI = adx;
+    groupOk.gulf = true;
+  }
+
+  // QSE: Trading Economics ONLY — single source, always flagged unverified.
+  // The site's QAT card still reads the QAT key, so it gets the real index
+  // too (with the QAT ETF proxy nested inside as a fallback reference only).
+  try {
+    const te = await fetchTradingEconomics('https://tradingeconomics.com/qatar/stock-market', 'DSM:IND');
+    markSource('tradingeconomics_qse', 'ok');
+    const qse = { symbol: 'QSE', price: te.price, change_pct: te.change_pct, change_abs: te.change_abs, previous_close: te.previous_close, currency: 'QAR', label: 'Qatar Stock Exchange (QSE)', source: 'Trading Economics', verified: false, note: 'Single source (Trading Economics) — unverified' };
+    live.gulf.QSE = qse;
+    live.gulf.QAT = { ...qse, symbol: 'QAT' };
+    groupOk.gulf = true;
+  } catch (e) {
+    markSource('tradingeconomics_qse', 'stale', e);
+    log(`WARN: Trading Economics QSE failed (${e.message}) — keeping last good value`);
+  }
+  // QAT ETF proxy (Yahoo) — fallback reference ONLY, nested in the QAT entry.
+  try {
+    const qat = await fetchYahoo('QAT');
+    markSource('yahoo:QAT', 'ok');
+    if (live.gulf.QAT && num(live.gulf.QAT.price)) {
+      live.gulf.QAT.etf_proxy = { price: qat.price, change_pct: qat.change_pct, source: 'Yahoo Finance (iShares MSCI Qatar ETF)' };
+    }
+  } catch (e) {
+    markSource('yahoo:QAT', 'stale', e);
+  }
+  if (live.gulf.QSE) groupNotes.gulf = 'QSE is single-source (Trading Economics) — unverified';
+
+  // --- Metals: spot gold/silver ----------------------------------------------
+  let gpd = null;
+  try { gpd = await fetchGoldPriceDev(); markSource('goldprice_dev', 'ok'); }
+  catch (e) { markSource('goldprice_dev', 'stale', e); log(`WARN: goldprice.dev failed (${e.message}) — trying xaus`); }
+  let xaus = null;
+  try { xaus = await fetchXausSpot(); markSource('xaus_spot', 'ok'); }
+  catch (e) { markSource('xaus_spot', 'stale', e); log(`WARN: xaus spot failed (${e.message})`); }
+  let goldHistory = null;
+  let xauChange = null;
+  let xauPrevClose = null;
+  try {
+    goldHistory = await fetchXausHistory();
+    markSource('xaus_history', 'ok');
+    if (goldHistory.length >= 2) {
+      const last = goldHistory[goldHistory.length - 1];
+      const prevPt = goldHistory[goldHistory.length - 2];
+      if (prevPt.close) {
+        xauChange = round(((last.close - prevPt.close) / prevPt.close) * 100, 2);
+        xauPrevClose = prevPt.close;
+      }
+    }
+  } catch (e) {
+    markSource('xaus_history', 'stale', e);
+    log(`WARN: xaus history failed (${e.message}) — keeping last 30-day trend`);
+  }
+
+  // Per-metal resolution: goldprice.dev (unless it flags its own data stale)
+  // -> xaus -> Yahoo futures (tertiary, fetched below only if needed).
+  function resolveMetal(kind) {
+    if (gpd && gpd[kind] && !gpd[kind].is_stale) {
+      return { price: gpd[kind].price, source: 'goldprice.dev', basis: 'spot', computed_at: gpd[kind].computed_at, change_pct: null, previous_close: null };
+    }
+    if (xaus && !xaus.stale) {
+      const p = kind === 'xau' ? xaus.xau : xaus.xag;
+      if (p) return { price: p, source: 'xaus.com', basis: 'spot', computed_at: xaus.updated_at, change_pct: null, previous_close: null };
+    }
+    return null;
+  }
+  let gold = resolveMetal('xau');
+  let silver = resolveMetal('xag');
+  // Spot cross-check (1% tolerance — the feeds update at different times).
+  // A divergence is noted, never treated as a failure.
+  if (gpd && gpd.xau && xaus && xaus.xau) {
+    const d = relDiff(gpd.xau.price, xaus.xau);
+    if (d !== null && d > 0.01) divergenceNotes.push(`Gold spot feeds disagree: goldprice.dev $${gpd.xau.price} vs xaus $${xaus.xau}`);
+  }
+  if (gpd && gpd.xag && xaus && xaus.xag) {
+    const d = relDiff(gpd.xag.price, xaus.xag);
+    if (d !== null && d > 0.01) divergenceNotes.push(`Silver spot feeds disagree: goldprice.dev $${gpd.xag.price} vs xaus $${xaus.xag}`);
+  }
+  if (!gold || !silver) {
+    for (const [kind, symbol] of [['xau', 'GC=F'], ['xag', 'SI=F']]) {
+      if ((kind === 'xau' && gold) || (kind === 'xag' && silver)) continue;
       try {
-        live[section][symbol] = await fetchYahoo(symbol);
+        const row = await fetchYahoo(symbol);
         markSource(`yahoo:${symbol}`, 'ok');
-        groupOk[section] = true;
+        const entry = { price: row.price, source: 'Yahoo Finance', basis: 'futures', computed_at: null, change_pct: row.change_pct, previous_close: row.previous_close };
+        if (kind === 'xau') gold = entry; else silver = entry;
       } catch (e) {
         markSource(`yahoo:${symbol}`, 'stale', e);
         log(`WARN: Yahoo ${symbol} failed (${e.message}) — keeping last good value`);
       }
     }
   }
-  // Gulf labels: TASI + Brent are the real benchmarks; UAE/QAT are
-  // NYSE-listed ETFs used as market proxies (the DFM/ADX/QE indices are
-  // not published on any free keyless feed). Labels only attach to entries
-  // that actually carry a price, so a failed first fetch never writes a
-  // label-only (broken) entry.
-  if (live.gulf) {
-    const gulfLabels = { '^TASI.SR': 'Saudi Tadawul (TASI)', 'BZ=F': 'Brent crude', UAE: 'UAE markets (ETF proxy)', QAT: 'Qatar market (ETF proxy)' };
-    for (const [symbol, label] of Object.entries(gulfLabels)) {
-      if (live.gulf[symbol] && num(live.gulf[symbol].price)) live.gulf[symbol].label = label;
-      else delete live.gulf[symbol];
+  if (!live.metals) live.metals = {};
+  if (gold) {
+    const changePct = gold.change_pct ?? xauChange;
+    const prevClose = gold.previous_close ?? xauPrevClose;
+    live.metals['GC=F'] = { symbol: 'GC=F', price: gold.price, change_pct: changePct, previous_close: prevClose, currency: 'USD', source: gold.source, basis: gold.basis, ...(gold.computed_at ? { computed_at: gold.computed_at } : {}) };
+    live.metals.XAU = { symbol: 'XAU', price: gold.price, change_pct: changePct, previous_close: prevClose, currency: 'USD', unit: 'troy_ounce', label: 'Gold spot (XAU/USD)', source: gold.source, basis: gold.basis, ...(gold.computed_at ? { computed_at: gold.computed_at } : {}), cross_check: { goldprice_dev: gpd && gpd.xau ? gpd.xau.price : null, xaus: xaus ? xaus.xau : null } };
+    groupOk.metals = true;
+  }
+  if (silver) {
+    live.metals['SI=F'] = { symbol: 'SI=F', price: silver.price, change_pct: silver.change_pct, previous_close: silver.previous_close, currency: 'USD', source: silver.source, basis: silver.basis, ...(silver.computed_at ? { computed_at: silver.computed_at } : {}) };
+    live.metals.XAG = { symbol: 'XAG', price: silver.price, change_pct: silver.change_pct, previous_close: silver.previous_close, currency: 'USD', unit: 'troy_ounce', label: 'Silver spot (XAG/USD)', source: silver.source, basis: silver.basis, ...(silver.computed_at ? { computed_at: silver.computed_at } : {}), cross_check: { goldprice_dev: gpd && gpd.xag ? gpd.xag.price : null, xaus: xaus ? xaus.xag : null } };
+    groupOk.metals = true;
+  }
+  if (goldHistory) live.metals.gold_history_30d = goldHistory.slice(-30);
+  // Group attribution: the primary spot source actually used this run;
+  // last-update time = the provider's own computed_at when available.
+  if (gold || silver) {
+    const primarySource = (gold && gold.source) || (silver && silver.source);
+    const computedAt = (gold && gold.computed_at) || (silver && silver.computed_at);
+    if (primarySource === 'goldprice.dev') {
+      groupSource.metals = { source: 'goldprice.dev — gold & silver spot', source_ar: 'غولد برايس — الذهب والفضة الفوري' };
+      if (computedAt) groupFetchedAt.metals = computedAt;
+    } else if (primarySource === 'xaus.com') {
+      groupSource.metals = { source: 'xaus.com — gold & silver spot', source_ar: 'xaus.com — الذهب والفضة الفوري' };
+      if (computedAt) groupFetchedAt.metals = computedAt;
+    } else {
+      groupSource.metals = { source: 'Yahoo Finance — gold & silver futures', source_ar: 'ياهو فاينانس — عقود الذهب والفضة الآجلة' };
     }
   }
 
@@ -483,23 +1013,39 @@ async function main() {
   }
 
   // --- Per-group source + last-update metadata -------------------------------
-  // A refreshed group gets fetched_at = now with status 'live'; a group whose
-  // fetch failed keeps its previous entry (original fetched_at) with status
-  // 'stale', so the site shows an honest per-group "last updated".
+  // A refreshed group gets fetched_at = now (or the provider's own timestamp
+  // when the group uses one, e.g. metals computed_at) with status 'live'; a
+  // group whose fetch failed — or whose cross-check diverged — keeps its
+  // previous entry (original fetched_at) with status 'stale', so the site
+  // shows an honest per-group "last updated". Per-run source overrides and
+  // notes (divergence, weekend, QSE) attach here.
   const prevMeta = (prev.meta && prev.meta.groups) || {};
   const groups = {};
   for (const [key, names] of Object.entries(GROUP_SOURCES)) {
+    const entry = { ...(groupSource[key] || names), fetched_at: groupFetchedAt[key] || now, status: 'live' };
+    if (groupNotes[key]) entry.note = groupNotes[key];
     if (groupOk[key]) {
-      groups[key] = { ...names, fetched_at: now, status: 'live' };
+      groups[key] = entry;
     } else if (prevMeta[key]) {
-      groups[key] = { ...prevMeta[key], status: 'stale' };
+      groups[key] = { ...prevMeta[key], status: 'stale', ...(groupNotes[key] ? { note: groupNotes[key] } : {}) };
     }
   }
   live.meta = { fetched_at: now, groups };
 
   // --- Notes + sources ---------------------------------------------------------
+  const noteParts = [
+    `Parallel USD + gold: sp-today.com (Lira Today), cross-checked against Lirascope + SYPNow, fetched ${now}.`,
+    `Official USD: Central Bank of Syria bulletin (cb.gov.sy/fx/4), latest ${live.bulletin_date || 'n/a'}${isWeekend ? ' (weekend — no new bulletin expected)' : ''}.`,
+    'Crypto: CoinGecko (Kraken fallback).',
+    'FX: Frankfurter/ECB; SAR/AED/QAR are fixed pegs.',
+    'Stocks: Yahoo Finance. Gulf: TradingView (DFM/ADX) + Yahoo (TASI/Brent) + Trading Economics (QSE — single source, unverified).',
+    'Metals spot: goldprice.dev (primary), xaus.com (backup), Yahoo futures (tertiary).',
+    'Fear & Greed: alternative.me. News: BBC Business RSS (headlines + links only). Events: Forex Factory.',
+    'All lira figures are new Syrian pounds. Analysis texts are editorial and update separately.',
+  ];
+  if (divergenceNotes.length > 0) noteParts.push(`Cross-check divergences this run: ${divergenceNotes.join(' | ')}`);
+  live.notes = noteParts.join(' ');
   live.sources = SOURCES;
-  live.notes = `Parallel rates + gold: sp-today.com (Lira Today), fetched ${now}. Official USD: Central Bank of Syria bulletin (cb.gov.sy/fx/4), latest ${live.bulletin_date || 'n/a'}. Crypto: CoinGecko (Kraken fallback). FX: Frankfurter/ECB; SAR/AED/QAR are fixed pegs. Stocks/metals/oil/Gulf: Yahoo Finance. Fear & Greed: alternative.me. News: BBC Business RSS (headlines + links only). Events: Forex Factory. All lira figures are new Syrian pounds. Analysis texts are editorial and update separately.`;
 
   // --- Validate, then write ----------------------------------------------------
   // The file is written on every valid run (even when no figure moved), so
