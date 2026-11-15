@@ -1,0 +1,85 @@
+# Insighter+ push notifications (FCM, data-only messages).
+#
+# Sends the daily morning-prices message (08:00 Damascus) and
+# announcements on demand. The Node script is zero-dependency:
+# it authenticates with the Firebase service account via a JWT and
+# posts to the FCM HTTP v1 API.
+#
+# REQUIRED SECRET: FIREBASE_SERVICE_ACCOUNT — the full JSON of the
+# Firebase service-account key for project insighter-plus.
+#
+# KNOWN ISSUE (15 Nov 2026): scheduled workflows on this org repo have
+# NEVER fired on their cron (only push/manual runs have been observed).
+# The schedule trigger is still required — if GitHub starts firing it,
+# the morning message goes out automatically. Until then, trigger the
+# morning message manually via workflow_dispatch (kind: morning), or
+# re-trigger from the live-data watchdog. Announcements always go out
+# via workflow_dispatch with the texts as inputs.
+name: Send notifications
+
+on:
+  schedule:
+    - cron: '0 5 * * *' # 05:00 UTC = 08:00 Damascus
+  workflow_dispatch:
+    inputs:
+      kind:
+        description: 'morning or announcement'
+        required: true
+        default: 'morning'
+        type: choice
+        options:
+          - morning
+          - announcement
+      title_ar:
+        description: 'Announcement title (Arabic) — announcement only'
+        required: false
+        type: string
+      body_ar:
+        description: 'Announcement body (Arabic) — announcement only'
+        required: false
+        type: string
+      title_en:
+        description: 'Announcement title (English) — announcement only'
+        required: false
+        type: string
+      body_en:
+        description: 'Announcement body (English) — announcement only'
+        required: false
+        type: string
+      link:
+        description: 'Announcement link (http/https) — announcement only, optional'
+        required: false
+        type: string
+      dry_run:
+        description: 'Print the messages without sending'
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  send:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v4
+
+      - name: Set up Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Send notification
+        env:
+          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+        run: |
+          ARGS=(--kind "${{ inputs.kind || 'morning' }}")
+          if [ "${{ inputs.dry_run }}" = "true" ]; then ARGS+=(--dry-run); fi
+          if [ -n "${{ inputs.title_ar }}" ]; then ARGS+=(--title-ar "${{ inputs.title_ar }}"); fi
+          if [ -n "${{ inputs.body_ar }}" ]; then ARGS+=(--body-ar "${{ inputs.body_ar }}"); fi
+          if [ -n "${{ inputs.title_en }}" ]; then ARGS+=(--title-en "${{ inputs.title_en }}"); fi
+          if [ -n "${{ inputs.body_en }}" ]; then ARGS+=(--body-en "${{ inputs.body_en }}"); fi
+          if [ -n "${{ inputs.link }}" ]; then ARGS+=(--link "${{ inputs.link }}"); fi
+          node scripts/send-notification.mjs "${ARGS[@]}"
