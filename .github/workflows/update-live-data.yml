@@ -68,5 +68,14 @@ jobs:
             echo "No changes to commit."
           else
             git commit -m "chore: update live market data ($(date -u +%Y-%m-%dT%H:%M:%SZ))"
-            git push
+            # Main may have moved while this run was in flight (e.g. a manual
+            # publish landing at the same time — this failed run #24 on 15 Nov).
+            # Rebase onto it first; if the rebase conflicts, main already
+            # carries a fresher live.json, so there is nothing left to push.
+            if ! git pull --rebase; then
+              git rebase --abort
+              echo "Main moved and rebase conflicted — live.json already updated by another push."
+              exit 0
+            fi
+            git push || (git pull --rebase && git push)
           fi
