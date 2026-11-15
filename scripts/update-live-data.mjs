@@ -1344,8 +1344,8 @@ async function main() {
   // with the same ETF price. DFM/ADX now have their own real index keys.
   delete live.gulf.UAE;
 
-  // TASI + Brent stay on Yahoo (they are the real benchmarks there).
-  for (const [symbol, label] of [['^TASI.SR', 'Saudi Tadawul (TASI)'], ['BZ=F', 'Brent crude']]) {
+  // TASI + Brent + WTI stay on Yahoo (they are the real benchmarks there).
+  for (const [symbol, label] of [['^TASI.SR', 'Saudi Tadawul (TASI)'], ['BZ=F', 'Brent crude'], ['CL=F', 'WTI crude']]) {
     try {
       const row = await fetchYahoo(symbol);
       row.label = label;
