@@ -1,7 +1,9 @@
 # Insighter+ live data — fully automatic, zero-touch.
-# Every 30 minutes this fetches real market data (Syria parallel rates + gold,
+# Every 5 minutes this fetches real market data (Syria parallel rates + gold,
 # Central Bank bulletin, crypto, FX, metals, stocks, Gulf markets, Fear & Greed,
 # BBC headlines, economic calendar) and commits data/live.json to main.
+# 5 minutes is the fastest GitHub Actions allows (its minimum schedule
+# interval); the site itself re-fetches the file every minute client-side.
 # The site (GitHub Pages) serves the fresh file automatically.
 # Self-healing: the updater keeps the last good figure for any source that
 # fails, never writes invalid data, and retries on the next run. No manual
@@ -10,7 +12,7 @@ name: Update live data
 
 on:
   schedule:
-    - cron: '*/30 * * * *'
+    - cron: '*/5 * * * *' # GitHub's minimum interval — fastest allowed
   workflow_dispatch:
   push:
     paths:
