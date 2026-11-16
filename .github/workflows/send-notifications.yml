@@ -1,7 +1,8 @@
 # Insighter+ push notifications (FCM, data-only messages).
 #
 # Sends the daily prices messages (morning 10:00 + evening 20:00
-# Damascus) and announcements on demand. The Node script is
+# Damascus), instant prices on demand (kind: now, from Badr's admin
+# app) and announcements on demand. The Node script is
 # zero-dependency: it authenticates with the Firebase service account
 # via a JWT and posts to the FCM HTTP v1 API.
 #
@@ -12,8 +13,8 @@
 # NEVER fired on their cron (only push/manual runs have been observed).
 # The schedule trigger is still required — if GitHub starts firing it,
 # the morning message goes out automatically. Until then, trigger the
-# prices messages manually via workflow_dispatch (kind: morning or
-# evening), or re-trigger from the live-data watchdog. Announcements
+# prices messages manually via workflow_dispatch (kind: morning,
+# evening or now), or re-trigger from the live-data watchdog. Announcements
 # always go out via workflow_dispatch with the texts as inputs.
 # NOTE: there is deliberately NO 20:00 schedule entry — a scheduled
 # run uses the default kind (morning), so it would send the morning
@@ -26,13 +27,14 @@ on:
   workflow_dispatch:
     inputs:
       kind:
-        description: 'morning, evening or announcement'
+        description: 'morning, evening, now or announcement'
         required: true
         default: 'morning'
         type: choice
         options:
           - morning
           - evening
+          - now
           - announcement
       title_ar:
         description: 'Announcement title (Arabic) — announcement only'
@@ -63,6 +65,11 @@ on:
         required: false
         default: false
         type: boolean
+      test:
+        description: 'Send ONLY to the test topics (admin app) — never to the public topics'
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -85,6 +92,7 @@ jobs:
         run: |
           ARGS=(--kind "${{ inputs.kind || 'morning' }}")
           if [ "${{ inputs.dry_run }}" = "true" ]; then ARGS+=(--dry-run); fi
+          if [ "${{ inputs.test }}" = "true" ]; then ARGS+=(--test); fi
           if [ -n "${{ inputs.title_ar }}" ]; then ARGS+=(--title-ar "${{ inputs.title_ar }}"); fi
           if [ -n "${{ inputs.body_ar }}" ]; then ARGS+=(--body-ar "${{ inputs.body_ar }}"); fi
           if [ -n "${{ inputs.title_en }}" ]; then ARGS+=(--title-en "${{ inputs.title_en }}"); fi
