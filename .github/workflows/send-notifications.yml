@@ -50,6 +50,10 @@ on:
         description: 'Announcement link (http/https) — announcement only, optional'
         required: false
         type: string
+      page:
+        description: 'Announcement deep-link page (decisions, syria, home, ...) — announcement only, optional'
+        required: false
+        type: string
       dry_run:
         description: 'Print the messages without sending'
         required: false
@@ -82,4 +86,5 @@ jobs:
           if [ -n "${{ inputs.title_en }}" ]; then ARGS+=(--title-en "${{ inputs.title_en }}"); fi
           if [ -n "${{ inputs.body_en }}" ]; then ARGS+=(--body-en "${{ inputs.body_en }}"); fi
           if [ -n "${{ inputs.link }}" ]; then ARGS+=(--link "${{ inputs.link }}"); fi
+          if [ -n "${{ inputs.page }}" ]; then ARGS+=(--page "${{ inputs.page }}"); fi
           node scripts/send-notification.mjs "${ARGS[@]}"
