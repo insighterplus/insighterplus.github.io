@@ -1,6 +1,6 @@
 # Insighter+ push notifications (FCM, data-only messages).
 #
-# Sends the daily morning-prices message (08:00 Damascus) and
+# Sends the daily morning-prices message (10:00 Damascus) and
 # announcements on demand. The Node script is zero-dependency:
 # it authenticates with the Firebase service account via a JWT and
 # posts to the FCM HTTP v1 API.
@@ -19,7 +19,7 @@ name: Send notifications
 
 on:
   schedule:
-    - cron: '0 5 * * *' # 05:00 UTC = 08:00 Damascus
+    - cron: '0 7 * * *' # 07:00 UTC = 10:00 Damascus
   workflow_dispatch:
     inputs:
       kind:
