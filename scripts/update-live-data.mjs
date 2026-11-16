@@ -54,7 +54,8 @@
 //
 // Usage: node scripts/update-live-data.mjs
 // Reads: data/live.json (previous state) or scripts/seed.json (first run).
-// Writes: data/live.json (only if valid and changed).
+// Writes: data/live.json (only if valid and changed) + data/usd-history.json
+//   (30-day USD closes, derived from the daily history in live.json).
 
 import fs from 'node:fs';
 import os from 'node:os';
@@ -67,6 +68,7 @@ const execFileAsync = promisify(execFile);
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const LIVE_PATH = path.join(ROOT, 'data', 'live.json');
+const HISTORY_PATH = path.join(ROOT, 'data', 'usd-history.json');
 const SEED_PATH = path.join(ROOT, 'scripts', 'seed.json');
 const TIMEOUT_MS = 15000;
 const UA = 'Mozilla/5.0 (compatible; InsighterPlusBot/1.0; +https://insighterplus.github.io/)';
@@ -183,8 +185,58 @@ function markSource(name, status, error, note) {
 
 const PARALLEL_CODES = ['USD', 'EUR', 'TRY', 'SAR', 'AED', 'EGP', 'LYD', 'JOD', 'KWD', 'GBP', 'QAR', 'BHD', 'SEK', 'CAD', 'OMR', 'NOK', 'DKK', 'DZD', 'MAD', 'TND', 'RUB', 'MYR', 'BRL', 'NZD', 'CHF', 'AUD', 'ZAR', 'SGD'];
 
+// Parse the USD city series out of sp-today's embedded Next.js Flight payload.
+// Returns { damascus: {buy, sell, change, prev_close, day_high, day_low,
+// change_week, change_month, change_year}, alhasakah: {...} } in NEW SYP,
+// or null when the payload is absent/unparseable. Throws only on structural
+// surprises inside a payload that was found (caller treats as soft failure).
+function parseSpTodayCities(html) {
+  const chunkRe = /self\.__next_f\.push\(\[1,"((?:[^"\\]|\\.)*)"\]\)/g;
+  let m;
+  while ((m = chunkRe.exec(html)) !== null) {
+    let inner;
+    try { inner = JSON.parse('"' + m[1] + '"'); } catch { continue; }
+    if (!inner.includes('damascus') || !inner.includes('"rates"')) continue;
+    const start = inner.indexOf('{"lang"');
+    if (start < 0) continue;
+    let depth = 0;
+    for (let k = start; k < inner.length; k++) {
+      if (inner[k] === '{') depth++;
+      else if (inner[k] === '}') {
+        depth--;
+        if (depth === 0) {
+          const obj = JSON.parse(inner.slice(start, k + 1));
+          const rates = obj && obj.data && obj.data.rates;
+          if (!Array.isArray(rates)) return null;
+          const usd = rates.find((r) => r && r.code === 'USD');
+          if (!usd || !usd.cities) return null;
+          const out = {};
+          for (const [slug, c] of Object.entries(usd.cities)) {
+            if (!c || typeof c.buy !== 'number' || typeof c.sell !== 'number') continue;
+            out[slug] = {
+              buy: round(c.buy / 100, 2),
+              sell: round(c.sell / 100, 2),
+              change: typeof c.change === 'number' ? c.change : null,
+              prev_close: typeof c.prev_close === 'number' ? round(c.prev_close / 100, 2) : null,
+              day_high: typeof c.day_high === 'number' ? round(c.day_high / 100, 2) : null,
+              day_low: typeof c.day_low === 'number' ? round(c.day_low / 100, 2) : null,
+              change_week: typeof c.change_week === 'number' ? c.change_week : null,
+              change_month: typeof c.change_month === 'number' ? c.change_month : null,
+              change_year: typeof c.change_year === 'number' ? c.change_year : null,
+            };
+          }
+          return Object.keys(out).length ? out : null;
+        }
+      }
+    }
+    return null;
+  }
+  return null;
+}
+
 async function fetchSpToday() {
-  const home = stripTags(await fetchText('https://sp-today.com/'));
+  const homeHtml = await fetchText('https://sp-today.com/');
+  const home = stripTags(homeHtml);
   const all = stripTags(await fetchText('https://sp-today.com/currencies'));
 
   // Parallel rates (incl. USD) come from /currencies, where every row has the
@@ -203,7 +255,7 @@ async function fetchSpToday() {
   const parallelUSD = parallel.USD;
 
   const gold = {};
-  for (const [key, karat] of [['gold24k', '24K'], ['gold21k', '21K'], ['gold18k', '18K']]) {
+  for (const [key, karat] of [['gold24k', '24K'], ['gold21k', '21K'], ['gold18k', '18K'], ['gold14k', '14K']]) {
     const m = home.match(new RegExp(`${karat}\\s+\\$([\\d,]+\\.?\\d*)\\s+([\\d,]+\\.?\\d*)\\s+([\\d,]+\\.?\\d*)`));
     if (m) gold[key] = { usd_per_gram: num(m[1]), buy: num(m[2]), sell: num(m[3]) };
   }
@@ -212,7 +264,16 @@ async function fetchSpToday() {
   const ounce = home.match(/أونصة الذهب\s+\$([\d,]+\.?\d*)/);
   const silverOunce = home.match(/أونصة الفضة\s+\$\s*([\d,]+\.?\d*)/);
 
-  return { parallelUSD, gold, goldOunceUSD: ounce ? num(ounce[1]) : null, silverOunceUSD: silverOunce ? num(silverOunce[1]) : null, parallel };
+  // USD by city (Damascus + Hasakah): sp-today embeds a Next.js Flight payload
+  // (self.__next_f) carrying a `rates` array; each currency has per-city
+  // buy/sell in OLD SYP (÷100 -> new SYP) plus change/week/month/year stats.
+  // Soft failure: cities are extra data — a parse failure must never fail
+  // the whole sp-today fetch (the primary USD + gold above still stand).
+  let cities = null;
+  try { cities = parseSpTodayCities(homeHtml); }
+  catch (e) { log(`WARN: sp-today cities parse failed (${e.message}) — keeping last good cities`); }
+
+  return { parallelUSD, gold, goldOunceUSD: ounce ? num(ounce[1]) : null, silverOunceUSD: silverOunce ? num(silverOunce[1]) : null, parallel, cities };
 }
 
 // --- Syria: Lirascope (NEW domain) — co-primary + cross-check ------------------
@@ -704,6 +765,45 @@ async function fetchFXCached() {
 const RUN_STARTED_AT = new Date().toISOString();
 
 // --- Yahoo Finance chart (stocks, indices, oil, ETF proxy) ----------------
+// Normalise a history date to ISO (old entries are "12 Nov 2026", new ones
+// are already "2026-11-15"). Returns null when unparseable.
+function toISODate(s) {
+  if (!s) return null;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+  const m = String(s).match(/^(\d{1,2})\s+([A-Za-z]{3})\s+(\d{4})$/);
+  if (!m) return null;
+  const months = { Jan: '01', Feb: '02', Mar: '03', Apr: '04', May: '05', Jun: '06', Jul: '07', Aug: '08', Sep: '09', Oct: '10', Nov: '11', Dec: '12' };
+  const mm = months[m[2]];
+  if (!mm) return null;
+  return `${m[3]}-${mm}-${String(m[1]).padStart(2, '0')}`;
+}
+
+// --- Yahoo Finance chart history (1 month, for sparklines) ------------------
+// Same quote fields as fetchYahoo, plus a `spark` array of daily closes
+// (null when fewer than 2 closes exist — the site then renders no sparkline).
+async function fetchYahooHistory(symbol) {
+  const data = await fetchJSON(`https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?range=1mo&interval=1d`);
+  const result = data.chart && data.chart.result && data.chart.result[0];
+  if (!result) throw new Error(`Yahoo: no data for ${symbol}`);
+  const meta = result.meta;
+  const closes = ((result.indicators && result.indicators.quote && result.indicators.quote[0] && result.indicators.quote[0].close) || []).filter((v) => typeof v === 'number' && isFinite(v));
+  const price = num(meta.regularMarketPrice);
+  const previousClose = num(meta.chartPreviousClose || meta.previousClose);
+  const lastClose = closes.length ? closes[closes.length - 1] : null;
+  const prevClose = closes.length > 1 ? closes[closes.length - 2] : previousClose;
+  const pct = num(meta.regularMarketChangePercent);
+  return {
+    symbol: meta.symbol,
+    price: price !== null ? price : lastClose,
+    change: (price !== null && previousClose !== null) ? round(price - previousClose, 2) : ((lastClose !== null && prevClose !== null) ? round(lastClose - prevClose, 2) : null),
+    change_pct: pct !== null ? round(pct, 2) : ((lastClose !== null && prevClose) ? round((lastClose - prevClose) / prevClose * 100, 2) : null),
+    previous_close: previousClose !== null ? previousClose : prevClose,
+    currency: meta.currency || 'USD',
+    asOf: meta.regularMarketTime ? new Date(meta.regularMarketTime * 1000).toISOString() : RUN_STARTED_AT,
+    spark: closes.length >= 2 ? closes.map((v) => round(v, 2)) : null,
+  };
+}
+
 async function fetchYahoo(symbol) {
   const data = await fetchJSON(`https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?range=1d&interval=1d`);
   const result = data.chart && data.chart.result && data.chart.result[0];
@@ -722,7 +822,7 @@ async function fetchYahoo(symbol) {
   };
 }
 
-const YAHOO_STOCKS = ['^GSPC', '^NDX', '^DJI', 'AAPL', 'MSFT', 'NVDA', 'GOOGL', 'AMZN', 'TSLA', 'DX-Y.NYB', '^FTSE', '^GDAXI', '^N225'];
+const YAHOO_STOCKS = ['^GSPC', '^NDX', '^DJI', 'AAPL', 'MSFT', 'NVDA', 'GOOGL', 'AMZN', 'TSLA', 'META', 'AMD', 'AVGO', 'DX-Y.NYB', '^FTSE', '^GDAXI', '^N225', '^FCHI', '000001.SS', '^HSI', '000300.SS'];
 
 // --- Gulf: TradingView scanner (keyless JSON) — REAL DFM/ADX indices ------
 // GET /symbol?symbol=DFM:DFMGI&fields=close,change,change_abs,description
@@ -1092,7 +1192,19 @@ async function main() {
       if (sp.gold.gold18k) live.syria.gold18k = { buy: sp.gold.gold18k.buy, sell: sp.gold.gold18k.sell, usd_per_gram: sp.gold.gold18k.usd_per_gram };
       if (sp.goldOunceUSD) live.syria.gold_ounce_usd = sp.goldOunceUSD;
       if (sp.silverOunceUSD) live.syria.silver_ounce_usd = sp.silverOunceUSD;
+      // Structured karat table (incl. 14K) for the full gold section — the
+      // legacy gold21k/24k/18k fields above stay untouched (site + app read them).
+      const karats = {};
+      for (const [k, key] of [[24, 'gold24k'], [21, 'gold21k'], [18, 'gold18k'], [14, 'gold14k']]) {
+        if (sp.gold[key]) karats[k] = { buy: sp.gold[key].buy, sell: sp.gold[key].sell, usd_per_gram: sp.gold[key].usd_per_gram };
+      }
+      if (Object.keys(karats).length) live.syria.gold = { karats, ounce_usd: sp.goldOunceUSD || live.syria.gold_ounce_usd || null };
+      if (sp.silverOunceUSD) live.syria.silver = { ounce_usd: sp.silverOunceUSD };
     }
+    // USD by city (Damascus + Hasakah) — drives the Syria page's city block
+    // and the market-range note. Only sp-today publishes city series, so when
+    // it is down the last good cities stay live (never blanked).
+    if (sp && sp.cities) live.syria.parallel = { cities: sp.cities, source: 'Lira Today (sp-today.com)', fetched_at: now };
     // Parallel rates for the 31-currency table: sp-today primary; Lirascope
     // when sp-today is down. IQD is skipped from sp-today (it rounds it to
     // 0.10/0.10, losing precision) — instead IQD is always filled from
@@ -1337,7 +1449,7 @@ async function main() {
   if (!live.stocks) live.stocks = {};
   for (const symbol of YAHOO_STOCKS) {
     try {
-      live.stocks[symbol] = await fetchYahoo(symbol);
+      live.stocks[symbol] = await fetchYahooHistory(symbol);
       markSource(`yahoo:${symbol}`, 'ok');
       groupOk.stocks = true;
     } catch (e) {
@@ -1351,11 +1463,14 @@ async function main() {
   // The old UAE ETF proxy key is dropped: it fed both the DFM and ADX cards
   // with the same ETF price. DFM/ADX now have their own real index keys.
   delete live.gulf.UAE;
+  // BAX (Baxter stock, briefly written here on 17 Nov before the symbol was
+  // verified wrong) is dropped too — Yahoo has no Bahrain All Share index.
+  delete live.gulf.BAX;
 
   // TASI + Brent + WTI stay on Yahoo (they are the real benchmarks there).
-  for (const [symbol, label] of [['^TASI.SR', 'Saudi Tadawul (TASI)'], ['BZ=F', 'Brent crude'], ['CL=F', 'WTI crude']]) {
+  for (const [symbol, label, withHistory] of [['^TASI.SR', 'Saudi Tadawul (TASI)', true], ['BZ=F', 'Brent crude', false], ['CL=F', 'WTI crude', false]]) {
     try {
-      const row = await fetchYahoo(symbol);
+      const row = withHistory ? await fetchYahooHistory(symbol) : await fetchYahoo(symbol);
       row.label = label;
       if (row.price && row.previous_close) row.change_abs = round(row.price - row.previous_close, 2);
       live.gulf[symbol] = row;
@@ -1450,6 +1565,11 @@ async function main() {
   }
 
   // QSE: Trading Economics ONLY — single source, always flagged unverified.
+  // (Yahoo has NO QE Index symbol: 'QSI' returns an unrelated $1.06 security
+  // and the Yahoo search API finds no QE Index — verified 17 Nov 2026. The
+  // same check killed Bahrain 'BAX' — Baxter stock, not the All Share index —
+  // plus Kuwait Main Market 50 and Oman MSX 30, which have no Yahoo symbol
+  // at all. Those four indices are deliberately NOT in this file.)
   // The site's QAT card still reads the QAT key, so it gets the real index
   // too (with the QAT ETF proxy nested inside as a fallback reference only).
   try {
@@ -1653,6 +1773,23 @@ async function main() {
   fs.mkdirSync(path.dirname(LIVE_PATH), { recursive: true });
   fs.writeFileSync(LIVE_PATH, output);
   log(`Wrote ${LIVE_PATH} (${output.length} bytes)`);
+
+  // --- USD 30-day history file (for the Syria page chart) --------------------
+  // Derived from the same daily history live.json already publishes (one
+  // entry per day, max 30, today's entry updated in place) — dates
+  // normalised to ISO. A write failure here must never fail the run:
+  // live.json above is the critical file; the chart falls back to its cache.
+  try {
+    const historyPoints = (Array.isArray(live.syria.history) ? live.syria.history : [])
+      .map((hh) => ({ date: toISODate(hh.date), sell: num(hh.usd_parallel_sell) }))
+      .filter((pp) => pp.date && pp.sell !== null)
+      .sort((a, b) => (a.date < b.date ? -1 : 1));
+    const historyOut = JSON.stringify({ updated_at: now, points: historyPoints.slice(-30) }, null, 2) + '\n';
+    fs.writeFileSync(HISTORY_PATH, historyOut);
+    log(`Wrote ${HISTORY_PATH} (${historyPoints.length} points)`);
+  } catch (e) {
+    log(`WARN: usd-history.json write failed (${e.message}) — live.json is unaffected`);
+  }
 }
 
 main().catch((e) => {
