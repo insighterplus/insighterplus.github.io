@@ -197,10 +197,85 @@ function loadFuel() {
     const diesel = byId.diesel1;
     const gas = byId.gas_home;
     if (![p95, p90, diesel, gas].every(isNumber)) return null;
-    return { p95, p90, diesel, gas };
+    // bulletin_date drives the fuel status line: a bulletin from an
+    // earlier day means the same prices were in effect yesterday.
+    // `previous` (optional) holds the previous bulletin's prices by
+    // item id — when fuel.json is updated with a new bulletin, the old
+    // prices are preserved there so the message can say what changed.
+    const prev = data?.previous;
+    const previous = {};
+    if (prev && typeof prev === 'object') {
+      for (const [id, v] of Object.entries(prev)) {
+        if (isNumber(v)) previous[id] = v;
+      }
+    }
+    return {
+      p95,
+      p90,
+      diesel,
+      gas,
+      bulletinDate:
+        typeof data?.bulletin_date === 'string' ? data.bulletin_date : null,
+      previous,
+    };
   } catch {
     return null;
   }
+}
+
+// Fuel status suffix for the morning message.
+// - bulletin from an earlier day: same prices as yesterday.
+// - bulletin issued today: new bulletin; per-item changes when the
+//   previous prices are recorded in fuel.json ("previous" by item id).
+// - no/invalid bulletin date: no status (prices shown without a claim).
+function fuelStatusText(fuel) {
+  const today = new Date().toLocaleDateString('en-CA', {
+    timeZone: 'Asia/Damascus',
+  });
+  const bulletin = fuel?.bulletinDate;
+  if (typeof bulletin !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(bulletin)) {
+    return { ar: '', en: '' };
+  }
+  if (bulletin < today) {
+    return { ar: ' (لا تغيير عن يوم أمس)', en: ' (no change vs yesterday)' };
+  }
+  if (bulletin > today) {
+    return { ar: '', en: '' };
+  }
+  // New bulletin today.
+  const prev = fuel.previous ?? {};
+  const items = [
+    ['petrol95', fuel.p95, 'بنزين 95', 'petrol 95'],
+    ['petrol90', fuel.p90, 'بنزين 90', 'petrol 90'],
+    ['diesel1', fuel.diesel, 'مازوت', 'diesel'],
+    ['gas_home', fuel.gas, 'غاز منزلي', 'household gas'],
+  ];
+  const changedAr = [];
+  const changedEn = [];
+  let havePrev = false;
+  for (const [id, cur, labelAr, labelEn] of items) {
+    const old = prev[id];
+    if (!isNumber(old)) continue;
+    havePrev = true;
+    const delta = cur - old;
+    if (delta === 0) continue;
+    const arrow = delta > 0 ? '↑' : '↓';
+    changedAr.push(`${labelAr}: ${arrow} ${fmtInt(Math.abs(delta))}`);
+    changedEn.push(`${labelEn}: ${arrow} ${fmtInt(Math.abs(delta))}`);
+  }
+  if (!havePrev) {
+    return { ar: ' (نشرة جديدة اليوم)', en: ' (new bulletin today)' };
+  }
+  if (changedAr.length === 0) {
+    return {
+      ar: ' (لا تغيير عن النشرة السابقة)',
+      en: ' (unchanged from the previous bulletin)',
+    };
+  }
+  return {
+    ar: ` (نشرة جديدة: ${changedAr.join(' · ')})`,
+    en: ` (new bulletin: ${changedEn.join(' · ')})`,
+  };
 }
 
 function composeMorning(live) {
@@ -247,13 +322,17 @@ function composeMorning(live) {
         : null;
   }
 
-  // Fuel line (optional — omitted when fuel.json is unavailable).
+  // Fuel line (optional — omitted when fuel.json is unavailable), with a
+  // status: a bulletin from an earlier day means no change vs yesterday;
+  // a bulletin issued today is flagged, with per-item changes when the
+  // previous prices are recorded in fuel.json.
   const fuel = loadFuel();
+  const fuelStatus = fuel ? fuelStatusText(fuel) : { ar: '', en: '' };
   const fuelAr = fuel
-    ? `\nمحروقات: بنزين نوع 95: ${fmtInt(fuel.p95)} · بنزين نوع 90: ${fmtInt(fuel.p90)} · مازوت: ${fmtInt(fuel.diesel)} · غاز منزلي: ${fmtInt(fuel.gas)}`
+    ? `\nمحروقات: بنزين نوع 95: ${fmtInt(fuel.p95)} · بنزين نوع 90: ${fmtInt(fuel.p90)} · مازوت: ${fmtInt(fuel.diesel)} · غاز منزلي: ${fmtInt(fuel.gas)}${fuelStatus.ar}`
     : '';
   const fuelEn = fuel
-    ? `\nFuel: petrol 95: ${fmtInt(fuel.p95)} · petrol 90: ${fmtInt(fuel.p90)} · diesel: ${fmtInt(fuel.diesel)} · household gas: ${fmtInt(fuel.gas)}`
+    ? `\nFuel: petrol 95: ${fmtInt(fuel.p95)} · petrol 90: ${fmtInt(fuel.p90)} · diesel: ${fmtInt(fuel.diesel)} · household gas: ${fmtInt(fuel.gas)}${fuelStatus.en}`
     : '';
 
   const ar = {
