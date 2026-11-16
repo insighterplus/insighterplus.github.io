@@ -250,10 +250,10 @@ function composeMorning(live) {
   // Fuel line (optional — omitted when fuel.json is unavailable).
   const fuel = loadFuel();
   const fuelAr = fuel
-    ? `\nمحروقات: بنزين 95: ${fmtInt(fuel.p95)} · 90: ${fmtInt(fuel.p90)} · مازوت: ${fmtInt(fuel.diesel)} · غاز: ${fmtInt(fuel.gas)}`
+    ? `\nمحروقات: بنزين نوع 95: ${fmtInt(fuel.p95)} · بنزين نوع 90: ${fmtInt(fuel.p90)} · مازوت: ${fmtInt(fuel.diesel)} · غاز منزلي: ${fmtInt(fuel.gas)}`
     : '';
   const fuelEn = fuel
-    ? `\nFuel: petrol 95: ${fmtInt(fuel.p95)} · 90: ${fmtInt(fuel.p90)} · diesel: ${fmtInt(fuel.diesel)} · gas: ${fmtInt(fuel.gas)}`
+    ? `\nFuel: petrol 95: ${fmtInt(fuel.p95)} · petrol 90: ${fmtInt(fuel.p90)} · diesel: ${fmtInt(fuel.diesel)} · household gas: ${fmtInt(fuel.gas)}`
     : '';
 
   const ar = {
