@@ -4,21 +4,32 @@
  *
  * Usage:
  *   node scripts/send-notification.mjs --kind morning [--dry-run]
+ *   node scripts/send-notification.mjs --kind evening [--dry-run]
  *   node scripts/send-notification.mjs --kind announcement \
  *     --title-ar "..." --body-ar "..." --title-en "..." --body-en "..." \
  *     [--page <page>] [--link https://...] [--dry-run]
  *
- * Morning mode fetches https://insighterplus.github.io/data/live.json
- * (cache-busted) and composes bilingual messages from REAL figures only:
+ * Morning (10:00 Damascus) and evening (20:00 Damascus) modes fetch
+ * https://insighterplus.github.io/data/live.json (cache-busted) and
+ * compose the SAME bilingual prices message from REAL figures only:
  * parallel USD buy/sell + official (Central Bank) USD rate + gold 21k
- * buy/sell + a fuel line from the repo's data/fuel.json. Change vs
- * yesterday shows ONLY on the fuel line (Badr's rule, 16 Nov 2026) —
- * never on the USD or gold lines. The fuel line is optional: if
- * fuel.json is missing or unreadable it is omitted and the send still
- * goes ahead.
- * If the feed is unreachable, a figure is
- * missing, or the data is stale (> 6 hours old), the script FAILS
- * WITHOUT SENDING — it never sends wrong or stale numbers.
+ * buy/sell + a fuel line from the repo's data/fuel.json. Only the
+ * TITLE differs (morning vs evening). Change vs yesterday shows ONLY
+ * on the fuel line (Badr's rule, 16 Nov 2026) — never on the USD or
+ * gold lines — and NO status line is shown at all when fuel prices
+ * are unchanged (Badr's rule, 16 Nov 2026 evening: the "no change"
+ * phrase was removed). The fuel line is optional: if fuel.json is
+ * missing or unreadable it is omitted and the send still goes ahead.
+ * If the feed is unreachable, a figure is missing, or the data is
+ * stale (> 6 hours old), the script FAILS WITHOUT SENDING — it never
+ * sends wrong or stale numbers.
+ *
+ * BOTH prices modes send data with type "morning" to the
+ * morning-prices topics. Deliberate: the app (v2.0.6) only knows the
+ * "morning" and "announcement" kinds — a type "evening" would parse
+ * as kind "unknown", open Home instead of Syria on tap, and bypass
+ * the morning toggle. The visible title carries the morning/evening
+ * distinction, so one payload type is correct for both sends.
  *
  * Announcement mode sends the given texts verbatim (both languages
  * required; link optional, http(s) only; --page optional — one of the
@@ -31,8 +42,8 @@
  *
  * Messages are DATA-ONLY (no notification block) so the app renders
  * them itself with its custom sound and deep links:
- *   morning      -> {type: morning, page: syria}   (opens Syria)
- *   announcement -> {type: announcement, link?, page?}
+ *   morning, evening -> {type: morning, page: syria} (opens Syria)
+ *   announcement     -> {type: announcement, link?, page?}
  *     (opens the link when given, else the page's section, else Home)
  */
 import https from 'node:https';
@@ -169,7 +180,7 @@ async function sendToTopic(projectId, token, topic, data) {
   return true;
 }
 
-// --- Morning message composition (real figures only) ---
+// --- Prices message composition (real figures only) ---
 
 function fmt2(n) {
   return n.toLocaleString('en-US', {
@@ -232,12 +243,15 @@ function loadFuel() {
   }
 }
 
-// Fuel status line for the morning message, shown on its own line under
+// Fuel status line for the prices message, shown on its own line under
 // the fuel prices (bare text, no parentheses — the layout puts it on a
-// line of its own).
-// - bulletin from an earlier day: same prices as yesterday.
+// line of its own). It appears ONLY when something actually changed:
+// - bulletin from an earlier day: prices unchanged — NO status line
+//   (Badr's rule, 16 Nov 2026 evening: the "no change" phrase was
+//   removed; silence means no change).
 // - bulletin issued today: new bulletin; per-item changes when the
 //   previous prices are recorded in fuel.json ("previous" by item id).
+//   When the new bulletin carries identical prices, again NO status.
 // - no/invalid bulletin date: no status (prices shown without a claim).
 function fuelStatusText(fuel) {
   const today = new Date().toLocaleDateString('en-CA', {
@@ -248,7 +262,8 @@ function fuelStatusText(fuel) {
     return { ar: '', en: '' };
   }
   if (bulletin < today) {
-    return { ar: 'لا تغيير عن يوم أمس', en: 'no change vs yesterday' };
+    // Unchanged prices — no status line at all (Badr's rule).
+    return { ar: '', en: '' };
   }
   if (bulletin > today) {
     return { ar: '', en: '' };
@@ -278,10 +293,8 @@ function fuelStatusText(fuel) {
     return { ar: 'نشرة جديدة اليوم', en: 'new bulletin today' };
   }
   if (changedAr.length === 0) {
-    return {
-      ar: 'لا تغيير عن النشرة السابقة',
-      en: 'unchanged from the previous bulletin',
-    };
+    // New bulletin, identical prices — no status line (Badr's rule).
+    return { ar: '', en: '' };
   }
   return {
     ar: `نشرة جديدة: ${changedAr.join(' · ')}`,
@@ -289,7 +302,7 @@ function fuelStatusText(fuel) {
   };
 }
 
-function composeMorning(live) {
+function composePrices(live, kind) {
   const syria = live?.syria;
   const usd = syria?.usd;
   const gold = syria?.gold21k;
@@ -314,10 +327,9 @@ function composeMorning(live) {
     );
   }
   // Fuel block (optional — omitted when fuel.json is unavailable): a
-  // header line, two item lines, and the status on its own line. A
-  // bulletin from an earlier day means no change vs yesterday; a
-  // bulletin issued today is flagged, with per-item changes when the
-  // previous prices are recorded in fuel.json.
+  // header line and two item lines, plus a status line ONLY when a new
+  // bulletin actually changed a price. Unchanged prices show no status
+  // at all (Badr's rule, 16 Nov 2026 evening).
   const fuel = loadFuel();
   const fuelStatus = fuel ? fuelStatusText(fuel) : { ar: '', en: '' };
   const fuelAr = fuel
@@ -331,12 +343,14 @@ function composeMorning(live) {
 
   // Body layout: three tidy blocks separated by a thin rule — USD
   // (parallel buy/sell, then the official rate), gold 21k (buy/sell),
-  // and fuel (header, two item lines, status line — the ONLY place a
-  // change vs yesterday appears). Line 1 always carries the parallel
-  // USD figures, so the collapsed notification already shows the
-  // headline number.
+  // and fuel (header, two item lines, and a status line ONLY when a
+  // new bulletin changed a price — the ONLY place a change vs
+  // yesterday appears). Line 1 always carries the parallel USD
+  // figures, so the collapsed notification already shows the headline
+  // number. Only the title differs between morning and evening.
+  const isEvening = kind === 'evening';
   const ar = {
-    title: 'أسعار الصباح — سوريا',
+    title: isEvening ? 'أسعار المساء — سوريا' : 'أسعار الصباح — سوريا',
     body:
       `دولار موازي: شراء ${fmt2(buy)} · بيع ${fmt2(sell)}` +
       `\nدولار مركزي: ${fmt2(central)}` +
@@ -346,7 +360,7 @@ function composeMorning(live) {
       fuelAr,
   };
   const en = {
-    title: 'Morning prices — Syria',
+    title: isEvening ? 'Evening prices — Syria' : 'Morning prices — Syria',
     body:
       `USD parallel: buy ${fmt2(buy)} · sell ${fmt2(sell)}` +
       `\nUSD official: ${fmt2(central)}` +
@@ -376,17 +390,26 @@ async function fetchLiveJson() {
 
 async function main() {
   const args = parseArgs(process.argv.slice(2));
-  if (args.kind !== 'morning' && args.kind !== 'announcement') {
-    fail(`--kind must be "morning" or "announcement", got "${args.kind}"`);
+  if (
+    args.kind !== 'morning' &&
+    args.kind !== 'evening' &&
+    args.kind !== 'announcement'
+  ) {
+    fail(
+      `--kind must be "morning", "evening" or "announcement", got "${args.kind}"`
+    );
   }
 
   let ar;
   let en;
   let dataAr;
   let dataEn;
-  if (args.kind === 'morning') {
+  if (args.kind === 'morning' || args.kind === 'evening') {
     const live = await fetchLiveJson();
-    ({ ar, en } = composeMorning(live));
+    ({ ar, en } = composePrices(live, args.kind));
+    // Both prices sends use type "morning" (see header comment): the
+    // app (v2.0.6) has no "evening" kind, and the title carries the
+    // morning/evening distinction.
     dataAr = { type: 'morning', title: ar.title, body: ar.body, page: 'syria' };
     dataEn = { type: 'morning', title: en.title, body: en.body, page: 'syria' };
   } else {
@@ -455,17 +478,17 @@ async function main() {
     fail('FIREBASE_SERVICE_ACCOUNT is missing project_id, client_email or private_key');
   }
   const token = await getAccessToken(serviceAccount);
-  const morning = args.kind === 'morning';
+  const prices = args.kind === 'morning' || args.kind === 'evening';
   const okAr = await sendToTopic(
     serviceAccount.project_id,
     token,
-    morning ? 'morning-prices-ar' : 'announcements-ar',
+    prices ? 'morning-prices-ar' : 'announcements-ar',
     dataAr
   );
   const okEn = await sendToTopic(
     serviceAccount.project_id,
     token,
-    morning ? 'morning-prices-en' : 'announcements-en',
+    prices ? 'morning-prices-en' : 'announcements-en',
     dataEn
   );
   if (!okAr || !okEn) {
