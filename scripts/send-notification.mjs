@@ -6,7 +6,7 @@
  *   node scripts/send-notification.mjs --kind morning [--dry-run]
  *   node scripts/send-notification.mjs --kind announcement \
  *     --title-ar "..." --body-ar "..." --title-en "..." --body-en "..." \
- *     [--link https://...] [--dry-run]
+ *     [--page <page>] [--link https://...] [--dry-run]
  *
  * Morning mode fetches https://insighterplus.github.io/data/live.json
  * (cache-busted) and composes bilingual messages from REAL figures only:
@@ -20,7 +20,8 @@
  * WITHOUT SENDING — it never sends wrong or stale numbers.
  *
  * Announcement mode sends the given texts verbatim (both languages
- * required; link optional, http(s) only).
+ * required; link optional, http(s) only; --page optional — one of the
+ * known app pages, deep-links the tap to that section).
  *
  * Auth: the Firebase service-account key JSON is read from the
  * FIREBASE_SERVICE_ACCOUNT environment variable (a GitHub secret).
@@ -30,7 +31,8 @@
  * Messages are DATA-ONLY (no notification block) so the app renders
  * them itself with its custom sound and deep links:
  *   morning      -> {type: morning, page: syria}   (opens Syria)
- *   announcement -> {type: announcement, link?}    (opens URL or Home)
+ *   announcement -> {type: announcement, link?, page?}
+ *     (opens the link when given, else the page's section, else Home)
  */
 import https from 'node:https';
 import crypto from 'node:crypto';
@@ -40,6 +42,19 @@ const LIVE_JSON_URL = 'https://insighterplus.github.io/data/live.json';
 const FCM_SCOPE = 'https://www.googleapis.com/auth/firebase.messaging';
 const TOKEN_URL = 'https://oauth2.googleapis.com/token';
 const MAX_DATA_AGE_MS = 6 * 60 * 60 * 1000; // 6 hours
+
+// Thin rule separating the three blocks of the morning body (20
+// box-drawing characters — short enough never to wrap in a notification).
+const BODY_RULE = '────────────────────';
+
+// Known app pages a notification tap may deep-link to (--page values).
+// Validated for announcement mode: an unknown page fails loudly instead
+// of silently opening Home. (The app maps "assets" to its Markets
+// section and "pulse"/"analysis"/"about" to their merged equivalents.)
+const KNOWN_PAGES = new Set([
+  'home', 'syria', 'decisions', 'pulse', 'assets', 'mideast', 'world',
+  'analysis', 'measure', 'trust', 'about', 'contact',
+]);
 
 function fail(message) {
   console.error(`ERROR: ${message}`);
@@ -57,6 +72,7 @@ function parseArgs(argv) {
     else if (a === '--title-en') args.titleEn = argv[++i] ?? '';
     else if (a === '--body-en') args.bodyEn = argv[++i] ?? '';
     else if (a === '--link') args.link = argv[++i] ?? '';
+    else if (a === '--page') args.page = argv[++i] ?? '';
     else fail(`unknown argument: ${a}`);
   }
   return args;
@@ -223,7 +239,9 @@ function loadFuel() {
   }
 }
 
-// Fuel status suffix for the morning message.
+// Fuel status line for the morning message, shown on its own line under
+// the fuel prices (bare text, no parentheses — the layout puts it on a
+// line of its own).
 // - bulletin from an earlier day: same prices as yesterday.
 // - bulletin issued today: new bulletin; per-item changes when the
 //   previous prices are recorded in fuel.json ("previous" by item id).
@@ -237,7 +255,7 @@ function fuelStatusText(fuel) {
     return { ar: '', en: '' };
   }
   if (bulletin < today) {
-    return { ar: ' (لا تغيير عن يوم أمس)', en: ' (no change vs yesterday)' };
+    return { ar: 'لا تغيير عن يوم أمس', en: 'no change vs yesterday' };
   }
   if (bulletin > today) {
     return { ar: '', en: '' };
@@ -264,17 +282,17 @@ function fuelStatusText(fuel) {
     changedEn.push(`${labelEn}: ${arrow} ${fmtInt(Math.abs(delta))}`);
   }
   if (!havePrev) {
-    return { ar: ' (نشرة جديدة اليوم)', en: ' (new bulletin today)' };
+    return { ar: 'نشرة جديدة اليوم', en: 'new bulletin today' };
   }
   if (changedAr.length === 0) {
     return {
-      ar: ' (لا تغيير عن النشرة السابقة)',
-      en: ' (unchanged from the previous bulletin)',
+      ar: 'لا تغيير عن النشرة السابقة',
+      en: 'unchanged from the previous bulletin',
     };
   }
   return {
-    ar: ` (نشرة جديدة: ${changedAr.join(' · ')})`,
-    en: ` (new bulletin: ${changedEn.join(' · ')})`,
+    ar: `نشرة جديدة: ${changedAr.join(' · ')}`,
+    en: `new bulletin: ${changedEn.join(' · ')}`,
   };
 }
 
@@ -322,37 +340,49 @@ function composeMorning(live) {
         : null;
   }
 
-  // Fuel line (optional — omitted when fuel.json is unavailable), with a
-  // status: a bulletin from an earlier day means no change vs yesterday;
-  // a bulletin issued today is flagged, with per-item changes when the
+  // Fuel block (optional — omitted when fuel.json is unavailable): a
+  // header line, two item lines, and the status on its own line. A
+  // bulletin from an earlier day means no change vs yesterday; a
+  // bulletin issued today is flagged, with per-item changes when the
   // previous prices are recorded in fuel.json.
   const fuel = loadFuel();
   const fuelStatus = fuel ? fuelStatusText(fuel) : { ar: '', en: '' };
   const fuelAr = fuel
-    ? `\nمحروقات: بنزين نوع 95: ${fmtInt(fuel.p95)} · بنزين نوع 90: ${fmtInt(fuel.p90)} · مازوت: ${fmtInt(fuel.diesel)} · غاز منزلي: ${fmtInt(fuel.gas)}${fuelStatus.ar}`
+    ? `\nمحروقات\nبنزين نوع 95: ${fmtInt(fuel.p95)} · بنزين نوع 90: ${fmtInt(fuel.p90)}\nمازوت: ${fmtInt(fuel.diesel)} · غاز منزلي: ${fmtInt(fuel.gas)}` +
+      (fuelStatus.ar ? `\n${fuelStatus.ar}` : '')
     : '';
   const fuelEn = fuel
-    ? `\nFuel: petrol 95: ${fmtInt(fuel.p95)} · petrol 90: ${fmtInt(fuel.p90)} · diesel: ${fmtInt(fuel.diesel)} · household gas: ${fmtInt(fuel.gas)}${fuelStatus.en}`
+    ? `\nFuel\npetrol 95: ${fmtInt(fuel.p95)} · petrol 90: ${fmtInt(fuel.p90)}\ndiesel: ${fmtInt(fuel.diesel)} · household gas: ${fmtInt(fuel.gas)}` +
+      (fuelStatus.en ? `\n${fuelStatus.en}` : '')
     : '';
 
+  // Body layout (v1.4.0): three tidy blocks separated by a thin rule —
+  // USD (parallel buy/sell + change, then the official rate), gold 21k
+  // (buy/sell + change), and fuel (header, two item lines, status
+  // line). Line 1 always carries the parallel USD figures, so the
+  // collapsed notification already shows the headline number.
   const ar = {
     title: 'أسعار الصباح — سوريا',
     body:
-      `دولار موازي ${fmt2(buy)} / ${fmt2(sell)}` +
+      `دولار موازي: شراء ${fmt2(buy)} · بيع ${fmt2(sell)}` +
       changePart(usdChange, 2, 'عن أمس') +
-      ` · مركزي ${fmt2(central)}` +
-      `\nذهب 21: ${fmtInt(gBuy)} / ${fmtInt(gSell)}` +
+      `\nدولار مركزي: ${fmt2(central)}` +
+      `\n${BODY_RULE}` +
+      `\nذهب عيار 21: شراء ${fmtInt(gBuy)} · بيع ${fmtInt(gSell)}` +
       changePart(goldChange, 0, 'عن أمس') +
+      (fuel ? `\n${BODY_RULE}` : '') +
       fuelAr,
   };
   const en = {
     title: 'Morning prices — Syria',
     body:
-      `USD parallel ${fmt2(buy)} / ${fmt2(sell)}` +
+      `USD parallel: buy ${fmt2(buy)} · sell ${fmt2(sell)}` +
       changePart(usdChange, 2, 'vs yesterday') +
-      ` · official ${fmt2(central)}` +
-      `\nGold 21k: ${fmtInt(gBuy)} / ${fmtInt(gSell)}` +
+      `\nUSD official: ${fmt2(central)}` +
+      `\n${BODY_RULE}` +
+      `\nGold 21k: buy ${fmtInt(gBuy)} · sell ${fmtInt(gSell)}` +
       changePart(goldChange, 0, 'vs yesterday') +
+      (fuel ? `\n${BODY_RULE}` : '') +
       fuelEn,
   };
   return { ar, en };
@@ -400,10 +430,24 @@ async function main() {
     if (link && !/^https?:\/\//i.test(link)) {
       fail(`--link must be an http(s) URL, got "${link}"`);
     }
+    // --page: deep-link target for the tap. Validated against the known
+    // app pages — a typo'd page fails here instead of being passed as
+    // --link (which rejected it) or silently opening Home.
+    const page = (args.page ?? '').trim().toLowerCase();
+    if (page && !KNOWN_PAGES.has(page)) {
+      fail(
+        `--page must be one of: ${[...KNOWN_PAGES].join(', ')}, ` +
+          `got "${args.page}"`
+      );
+    }
     ar = { title: args.titleAr.trim(), body: args.bodyAr.trim() };
     en = { title: args.titleEn.trim(), body: args.bodyEn.trim() };
     dataAr = { type: 'announcement', title: ar.title, body: ar.body };
     dataEn = { type: 'announcement', title: en.title, body: en.body };
+    if (page) {
+      dataAr.page = page;
+      dataEn.page = page;
+    }
     if (link) {
       dataAr.link = link;
       dataEn.link = link;
