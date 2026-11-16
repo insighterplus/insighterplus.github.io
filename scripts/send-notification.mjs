@@ -5,16 +5,21 @@
  * Usage:
  *   node scripts/send-notification.mjs --kind morning [--dry-run]
  *   node scripts/send-notification.mjs --kind evening [--dry-run]
+ *   node scripts/send-notification.mjs --kind now [--dry-run]
  *   node scripts/send-notification.mjs --kind announcement \
  *     --title-ar "..." --body-ar "..." --title-en "..." --body-en "..." \
  *     [--page <page>] [--link https://...] [--dry-run]
+ *   Any kind accepts --test: the message goes ONLY to the
+ *   test-notifications topics (subscribed by Badr's admin app alone),
+ *   never to the public topics.
  *
- * Morning (10:00 Damascus) and evening (20:00 Damascus) modes fetch
+ * Morning (10:00 Damascus), evening (20:00 Damascus) and now (instant,
+ * on-demand from Badr's admin app) modes fetch
  * https://insighterplus.github.io/data/live.json (cache-busted) and
  * compose the SAME bilingual prices message from REAL figures only:
  * parallel USD buy/sell + official (Central Bank) USD rate + gold 21k
  * buy/sell + a fuel line from the repo's data/fuel.json. Only the
- * TITLE differs (morning vs evening). Change vs yesterday shows ONLY
+ * TITLE differs (morning vs evening vs now). Change vs yesterday shows ONLY
  * on the fuel line (Badr's rule, 16 Nov 2026) — never on the USD or
  * gold lines — and NO status line is shown at all when fuel prices
  * are unchanged (Badr's rule, 16 Nov 2026 evening: the "no change"
@@ -24,12 +29,13 @@
  * stale (> 6 hours old), the script FAILS WITHOUT SENDING — it never
  * sends wrong or stale numbers.
  *
- * BOTH prices modes send data with type "morning" to the
+ * ALL THREE prices modes send data with type "morning" to the
  * morning-prices topics. Deliberate: the app (v2.0.6) only knows the
- * "morning" and "announcement" kinds — a type "evening" would parse
- * as kind "unknown", open Home instead of Syria on tap, and bypass
- * the morning toggle. The visible title carries the morning/evening
- * distinction, so one payload type is correct for both sends.
+ * "morning" and "announcement" kinds — a type "evening" or "now" would
+ * parse as kind "unknown", open Home instead of Syria on tap, and
+ * bypass the morning toggle. The visible title carries the
+ * morning/evening/now distinction, so one payload type is correct for
+ * all three sends.
  *
  * Announcement mode sends the given texts verbatim (both languages
  * required; link optional, http(s) only; --page optional — one of the
@@ -42,7 +48,7 @@
  *
  * Messages are DATA-ONLY (no notification block) so the app renders
  * them itself with its custom sound and deep links:
- *   morning, evening -> {type: morning, page: syria} (opens Syria)
+ *   morning, evening, now -> {type: morning, page: syria} (opens Syria)
  *   announcement     -> {type: announcement, link?, page?}
  *     (opens the link when given, else the page's section, else Home)
  */
@@ -74,10 +80,11 @@ function fail(message) {
 }
 
 function parseArgs(argv) {
-  const args = { kind: 'morning', dryRun: false };
+  const args = { kind: 'morning', dryRun: false, test: false };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--dry-run') args.dryRun = true;
+    else if (a === '--test') args.test = true;
     else if (a === '--kind') args.kind = argv[++i] ?? '';
     else if (a === '--title-ar') args.titleAr = argv[++i] ?? '';
     else if (a === '--body-ar') args.bodyAr = argv[++i] ?? '';
@@ -347,10 +354,15 @@ function composePrices(live, kind) {
   // new bulletin changed a price — the ONLY place a change vs
   // yesterday appears). Line 1 always carries the parallel USD
   // figures, so the collapsed notification already shows the headline
-  // number. Only the title differs between morning and evening.
-  const isEvening = kind === 'evening';
+  // number. Only the title differs between morning, evening and now.
+  const titles = {
+    morning: { ar: 'أسعار الصباح — سوريا', en: 'Morning prices — Syria' },
+    evening: { ar: 'أسعار المساء — سوريا', en: 'Evening prices — Syria' },
+    now: { ar: 'أسعار الصرف الآن', en: 'Exchange rates now' },
+  };
+  const t = titles[kind] ?? titles.morning;
   const ar = {
-    title: isEvening ? 'أسعار المساء — سوريا' : 'أسعار الصباح — سوريا',
+    title: t.ar,
     body:
       `دولار موازي: شراء ${fmt2(buy)} · بيع ${fmt2(sell)}` +
       `\nدولار مركزي: ${fmt2(central)}` +
@@ -360,7 +372,7 @@ function composePrices(live, kind) {
       fuelAr,
   };
   const en = {
-    title: isEvening ? 'Evening prices — Syria' : 'Morning prices — Syria',
+    title: t.en,
     body:
       `USD parallel: buy ${fmt2(buy)} · sell ${fmt2(sell)}` +
       `\nUSD official: ${fmt2(central)}` +
@@ -393,10 +405,11 @@ async function main() {
   if (
     args.kind !== 'morning' &&
     args.kind !== 'evening' &&
+    args.kind !== 'now' &&
     args.kind !== 'announcement'
   ) {
     fail(
-      `--kind must be "morning", "evening" or "announcement", got "${args.kind}"`
+      `--kind must be "morning", "evening", "now" or "announcement", got "${args.kind}"`
     );
   }
 
@@ -404,12 +417,12 @@ async function main() {
   let en;
   let dataAr;
   let dataEn;
-  if (args.kind === 'morning' || args.kind === 'evening') {
+  if (args.kind === 'morning' || args.kind === 'evening' || args.kind === 'now') {
     const live = await fetchLiveJson();
     ({ ar, en } = composePrices(live, args.kind));
-    // Both prices sends use type "morning" (see header comment): the
-    // app (v2.0.6) has no "evening" kind, and the title carries the
-    // morning/evening distinction.
+    // All prices sends use type "morning" (see header comment): the
+    // app (v2.0.6) has no "evening"/"now" kind, and the title carries
+    // the morning/evening/now distinction.
     dataAr = { type: 'morning', title: ar.title, body: ar.body, page: 'syria' };
     dataEn = { type: 'morning', title: en.title, body: en.body, page: 'syria' };
   } else {
@@ -478,17 +491,30 @@ async function main() {
     fail('FIREBASE_SERVICE_ACCOUNT is missing project_id, client_email or private_key');
   }
   const token = await getAccessToken(serviceAccount);
-  const prices = args.kind === 'morning' || args.kind === 'evening';
+  const prices =
+    args.kind === 'morning' || args.kind === 'evening' || args.kind === 'now';
+  // --test: the message goes ONLY to the test topics (Badr's admin app
+  // subscribes to them), never to the public topics.
+  const topicAr = args.test
+    ? 'test-notifications-ar'
+    : prices
+      ? 'morning-prices-ar'
+      : 'announcements-ar';
+  const topicEn = args.test
+    ? 'test-notifications-en'
+    : prices
+      ? 'morning-prices-en'
+      : 'announcements-en';
   const okAr = await sendToTopic(
     serviceAccount.project_id,
     token,
-    prices ? 'morning-prices-ar' : 'announcements-ar',
+    topicAr,
     dataAr
   );
   const okEn = await sendToTopic(
     serviceAccount.project_id,
     token,
-    prices ? 'morning-prices-en' : 'announcements-en',
+    topicEn,
     dataEn
   );
   if (!okAr || !okEn) {
