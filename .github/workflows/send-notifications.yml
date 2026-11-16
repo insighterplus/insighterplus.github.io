@@ -1,9 +1,9 @@
 # Insighter+ push notifications (FCM, data-only messages).
 #
-# Sends the daily morning-prices message (10:00 Damascus) and
-# announcements on demand. The Node script is zero-dependency:
-# it authenticates with the Firebase service account via a JWT and
-# posts to the FCM HTTP v1 API.
+# Sends the daily prices messages (morning 10:00 + evening 20:00
+# Damascus) and announcements on demand. The Node script is
+# zero-dependency: it authenticates with the Firebase service account
+# via a JWT and posts to the FCM HTTP v1 API.
 #
 # REQUIRED SECRET: FIREBASE_SERVICE_ACCOUNT — the full JSON of the
 # Firebase service-account key for project insighter-plus.
@@ -12,9 +12,12 @@
 # NEVER fired on their cron (only push/manual runs have been observed).
 # The schedule trigger is still required — if GitHub starts firing it,
 # the morning message goes out automatically. Until then, trigger the
-# morning message manually via workflow_dispatch (kind: morning), or
-# re-trigger from the live-data watchdog. Announcements always go out
-# via workflow_dispatch with the texts as inputs.
+# prices messages manually via workflow_dispatch (kind: morning or
+# evening), or re-trigger from the live-data watchdog. Announcements
+# always go out via workflow_dispatch with the texts as inputs.
+# NOTE: there is deliberately NO 20:00 schedule entry — a scheduled
+# run uses the default kind (morning), so it would send the morning
+# title at night. The evening send is driven by its dispatch cron.
 name: Send notifications
 
 on:
@@ -23,12 +26,13 @@ on:
   workflow_dispatch:
     inputs:
       kind:
-        description: 'morning or announcement'
+        description: 'morning, evening or announcement'
         required: true
         default: 'morning'
         type: choice
         options:
           - morning
+          - evening
           - announcement
       title_ar:
         description: 'Announcement title (Arabic) — announcement only'
