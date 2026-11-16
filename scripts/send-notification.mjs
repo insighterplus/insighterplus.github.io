@@ -11,10 +11,11 @@
  * Morning mode fetches https://insighterplus.github.io/data/live.json
  * (cache-busted) and composes bilingual messages from REAL figures only:
  * parallel USD buy/sell + official (Central Bank) USD rate + gold 21k
- * buy/sell + a fuel line from the repo's data/fuel.json, with the
- * change vs yesterday when the data carries it. The fuel line is
- * optional: if fuel.json is missing or unreadable it is omitted and
- * the send still goes ahead.
+ * buy/sell + a fuel line from the repo's data/fuel.json. Change vs
+ * yesterday shows ONLY on the fuel line (Badr's rule, 16 Nov 2026) —
+ * never on the USD or gold lines. The fuel line is optional: if
+ * fuel.json is missing or unreadable it is omitted and the send still
+ * goes ahead.
  * If the feed is unreachable, a figure is
  * missing, or the data is stale (> 6 hours old), the script FAILS
  * WITHOUT SENDING — it never sends wrong or stale numbers.
@@ -185,14 +186,6 @@ function isNumber(v) {
   return typeof v === 'number' && Number.isFinite(v);
 }
 
-/** " (↓ 0.25 vs yesterday)" — empty when there is no change to show. */
-function changePart(change, decimals, vsWord) {
-  if (!isNumber(change) || change === 0) return '';
-  const arrow = change > 0 ? '↑' : '↓';
-  const text = decimals === 0 ? fmtInt(Math.abs(change)) : fmt2(Math.abs(change));
-  return ` (${arrow} ${text} ${vsWord})`;
-}
-
 // --- Fuel prices (optional) ---
 // Read from the repo checkout (data/fuel.json, committed alongside this
 // script). Returns the 4 main prices or null — any problem means the fuel
@@ -320,26 +313,6 @@ function composeMorning(live) {
       `live.json is stale (fetched_at ${live.fetched_at}, older than 6h) — not sending`
     );
   }
-  // USD change vs yesterday: last history sell minus the one before it
-  // (same rule the app uses for its "vs yesterday" change).
-  const hist = Array.isArray(syria?.history) ? syria.history : [];
-  const sells = hist
-    .map((h) => h?.usd_parallel_sell)
-    .filter((v) => isNumber(v));
-  const usdChange =
-    sells.length >= 2 ? sells[sells.length - 1] - sells[sells.length - 2] : null;
-  // Gold change: the updater's own field, else the history series.
-  let goldChange = isNumber(gold?.change_vs_yesterday)
-    ? gold.change_vs_yesterday
-    : null;
-  if (goldChange === null) {
-    const gSells = hist.map((h) => h?.gold21k_sell).filter((v) => isNumber(v));
-    goldChange =
-      gSells.length >= 2
-        ? gSells[gSells.length - 1] - gSells[gSells.length - 2]
-        : null;
-  }
-
   // Fuel block (optional — omitted when fuel.json is unavailable): a
   // header line, two item lines, and the status on its own line. A
   // bulletin from an earlier day means no change vs yesterday; a
@@ -356,20 +329,19 @@ function composeMorning(live) {
       (fuelStatus.en ? `\n${fuelStatus.en}` : '')
     : '';
 
-  // Body layout (v1.4.0): three tidy blocks separated by a thin rule —
-  // USD (parallel buy/sell + change, then the official rate), gold 21k
-  // (buy/sell + change), and fuel (header, two item lines, status
-  // line). Line 1 always carries the parallel USD figures, so the
-  // collapsed notification already shows the headline number.
+  // Body layout: three tidy blocks separated by a thin rule — USD
+  // (parallel buy/sell, then the official rate), gold 21k (buy/sell),
+  // and fuel (header, two item lines, status line — the ONLY place a
+  // change vs yesterday appears). Line 1 always carries the parallel
+  // USD figures, so the collapsed notification already shows the
+  // headline number.
   const ar = {
     title: 'أسعار الصباح — سوريا',
     body:
       `دولار موازي: شراء ${fmt2(buy)} · بيع ${fmt2(sell)}` +
-      changePart(usdChange, 2, 'عن أمس') +
       `\nدولار مركزي: ${fmt2(central)}` +
       `\n${BODY_RULE}` +
       `\nذهب عيار 21: شراء ${fmtInt(gBuy)} · بيع ${fmtInt(gSell)}` +
-      changePart(goldChange, 0, 'عن أمس') +
       (fuel ? `\n${BODY_RULE}` : '') +
       fuelAr,
   };
@@ -377,11 +349,9 @@ function composeMorning(live) {
     title: 'Morning prices — Syria',
     body:
       `USD parallel: buy ${fmt2(buy)} · sell ${fmt2(sell)}` +
-      changePart(usdChange, 2, 'vs yesterday') +
       `\nUSD official: ${fmt2(central)}` +
       `\n${BODY_RULE}` +
       `\nGold 21k: buy ${fmtInt(gBuy)} · sell ${fmtInt(gSell)}` +
-      changePart(goldChange, 0, 'vs yesterday') +
       (fuel ? `\n${BODY_RULE}` : '') +
       fuelEn,
   };
