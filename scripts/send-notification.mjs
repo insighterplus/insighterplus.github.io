@@ -29,13 +29,17 @@
  * stale (> 6 hours old), the script FAILS WITHOUT SENDING — it never
  * sends wrong or stale numbers.
  *
- * ALL THREE prices modes send data with type "morning" to the
- * morning-prices topics. Deliberate: the app (v2.0.6) only knows the
- * "morning" and "announcement" kinds — a type "evening" or "now" would
- * parse as kind "unknown", open Home instead of Syria on tap, and
- * bypass the morning toggle. The visible title carries the
- * morning/evening/now distinction, so one payload type is correct for
- * all three sends.
+ * Prices modes and their topics (migrated 17 Nov 2026 for app v2.1.0,
+ * which subscribes to the evening and decisions topics and parses the
+ * "evening" and "decisions" kinds):
+ *   morning -> type "morning", morning-prices topics (page: syria)
+ *   evening -> type "evening", evening-prices topics (page: syria)
+ *   now     -> type "morning", morning-prices topics (page: syria) —
+ *              the app has no "now" kind, so the instant bulletin rides
+ *              the morning type; the title carries the distinction.
+ * Announcements with --page decisions send type "decisions" to the
+ * decisions topics; all other announcements send type "announcement"
+ * to the announcements topics.
  *
  * Announcement mode sends the given texts verbatim (both languages
  * required; link optional, http(s) only; --page optional — one of the
@@ -48,8 +52,10 @@
  *
  * Messages are DATA-ONLY (no notification block) so the app renders
  * them itself with its custom sound and deep links:
- *   morning, evening, now -> {type: morning, page: syria} (opens Syria)
- *   announcement     -> {type: announcement, link?, page?}
+ *   morning, now -> {type: morning, page: syria} (opens Syria)
+ *   evening      -> {type: evening, page: syria} (opens Syria)
+ *   announcement (page=decisions) -> {type: decisions, page: decisions}
+ *   announcement -> {type: announcement, link?, page?}
  *     (opens the link when given, else the page's section, else Home)
  */
 import https from 'node:https';
@@ -417,14 +423,18 @@ async function main() {
   let en;
   let dataAr;
   let dataEn;
+  // Decisions announcements (page=decisions) go to the decisions
+  // topics with type "decisions" (app v2.1.0); set in the branch below.
+  let isDecisions = false;
   if (args.kind === 'morning' || args.kind === 'evening' || args.kind === 'now') {
     const live = await fetchLiveJson();
     ({ ar, en } = composePrices(live, args.kind));
-    // All prices sends use type "morning" (see header comment): the
-    // app (v2.0.6) has no "evening"/"now" kind, and the title carries
-    // the morning/evening/now distinction.
-    dataAr = { type: 'morning', title: ar.title, body: ar.body, page: 'syria' };
-    dataEn = { type: 'morning', title: en.title, body: en.body, page: 'syria' };
+    // Evening has its own type + topics (app v2.1.0); morning and now
+    // share the morning type (the app has no "now" kind — the title
+    // carries the distinction). See the header comment.
+    const pricesType = args.kind === 'evening' ? 'evening' : 'morning';
+    dataAr = { type: pricesType, title: ar.title, body: ar.body, page: 'syria' };
+    dataEn = { type: pricesType, title: en.title, body: en.body, page: 'syria' };
   } else {
     if (!args.titleAr?.trim() || !args.bodyAr?.trim()) {
       fail('announcement mode requires --title-ar and --body-ar');
@@ -448,8 +458,10 @@ async function main() {
     }
     ar = { title: args.titleAr.trim(), body: args.bodyAr.trim() };
     en = { title: args.titleEn.trim(), body: args.bodyEn.trim() };
-    dataAr = { type: 'announcement', title: ar.title, body: ar.body };
-    dataEn = { type: 'announcement', title: en.title, body: en.body };
+    isDecisions = page === 'decisions';
+    const annType = isDecisions ? 'decisions' : 'announcement';
+    dataAr = { type: annType, title: ar.title, body: ar.body };
+    dataEn = { type: annType, title: en.title, body: en.body };
     if (page) {
       dataAr.page = page;
       dataEn.page = page;
@@ -460,10 +472,32 @@ async function main() {
     }
   }
 
-  console.log('--- Arabic (topic morning-prices-ar / announcements-ar) ---');
+  const prices =
+    args.kind === 'morning' || args.kind === 'evening' || args.kind === 'now';
+  // --test: the message goes ONLY to the test topics (Badr's admin app
+  // subscribes to them), never to the public topics.
+  const topicAr = args.test
+    ? 'test-notifications-ar'
+    : args.kind === 'evening'
+      ? 'evening-prices-ar'
+      : prices
+        ? 'morning-prices-ar'
+        : isDecisions
+          ? 'decisions-ar'
+          : 'announcements-ar';
+  const topicEn = args.test
+    ? 'test-notifications-en'
+    : args.kind === 'evening'
+      ? 'evening-prices-en'
+      : prices
+        ? 'morning-prices-en'
+        : isDecisions
+          ? 'decisions-en'
+          : 'announcements-en';
+  console.log(`--- Arabic (topic ${topicAr}) ---`);
   console.log(`Title: ${ar.title}`);
   console.log(`Body:\n${ar.body}`);
-  console.log('--- English (topic morning-prices-en / announcements-en) ---');
+  console.log(`--- English (topic ${topicEn}) ---`);
   console.log(`Title: ${en.title}`);
   console.log(`Body:\n${en.body}`);
   console.log(`Data: ${JSON.stringify(dataAr)}`);
@@ -491,20 +525,6 @@ async function main() {
     fail('FIREBASE_SERVICE_ACCOUNT is missing project_id, client_email or private_key');
   }
   const token = await getAccessToken(serviceAccount);
-  const prices =
-    args.kind === 'morning' || args.kind === 'evening' || args.kind === 'now';
-  // --test: the message goes ONLY to the test topics (Badr's admin app
-  // subscribes to them), never to the public topics.
-  const topicAr = args.test
-    ? 'test-notifications-ar'
-    : prices
-      ? 'morning-prices-ar'
-      : 'announcements-ar';
-  const topicEn = args.test
-    ? 'test-notifications-en'
-    : prices
-      ? 'morning-prices-en'
-      : 'announcements-en';
   const okAr = await sendToTopic(
     serviceAccount.project_id,
     token,
