@@ -9,21 +9,17 @@
 # REQUIRED SECRET: FIREBASE_SERVICE_ACCOUNT — the full JSON of the
 # Firebase service-account key for project insighter-plus.
 #
-# KNOWN ISSUE (15 Nov 2026): scheduled workflows on this org repo have
-# NEVER fired on their cron (only push/manual runs have been observed).
-# The schedule trigger is still required — if GitHub starts firing it,
-# the morning message goes out automatically. Until then, trigger the
-# prices messages manually via workflow_dispatch (kind: morning,
-# evening or now), or re-trigger from the live-data watchdog. Announcements
-# always go out via workflow_dispatch with the texts as inputs.
-# NOTE: there is deliberately NO 20:00 schedule entry — a scheduled
-# run uses the default kind (morning), so it would send the morning
-# title at night. The evening send is driven by its dispatch cron.
+# NO SCHEDULE TRIGGER (removed 18 Nov 2026): GitHub's scheduler on
+# this org repo fires hours late (observed 16/17/18 Nov: the 07:00 UTC
+# run fired ~19:17 Damascus), sending the morning-titled message in
+# the evening and duplicating the morning send. All sends are driven
+# by workflow_dispatch only: the morning dispatch cron (10:00
+# Damascus), the evening dispatch cron (20:00 Damascus), Badr's admin
+# app (kind: now / announcement), or a manual run. Do NOT re-add a
+# schedule trigger.
 name: Send notifications
 
 on:
-  schedule:
-    - cron: '0 7 * * *' # 07:00 UTC = 10:00 Damascus
   workflow_dispatch:
     inputs:
       kind:
