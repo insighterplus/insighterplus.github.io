@@ -1017,8 +1017,13 @@ function validate(live) {
   if (!live.crypto || !live.crypto.BTC || !num(live.crypto.BTC.price)) problems.push('missing BTC');
   if (!live.stocks || !live.stocks['^GSPC'] || !num(live.stocks['^GSPC'].price)) problems.push('missing S&P 500');
   if (!live.fx || !live.fx.rates || !num(live.fx.rates.EUR)) problems.push('missing FX rates');
-  if (!Array.isArray(live.news) || live.news.length === 0) problems.push('missing news');
-  if (!Array.isArray(live.events) || live.events.length === 0) problems.push('missing events');
+  // News + events are display-only sections: an empty array is a valid state
+  // (no headlines fetched, or no upcoming events — e.g. weekends), and must
+  // NEVER block the price update. Only a non-array shape is a real problem.
+  // (21 Nov 2026: 'missing events' blocked every run for hours because the
+  // Forex Factory feed had no upcoming events on a Friday night.)
+  if (!Array.isArray(live.news)) problems.push('missing news');
+  if (!Array.isArray(live.events)) problems.push('missing events');
   return problems;
 }
 
@@ -1707,6 +1712,7 @@ async function main() {
   } catch (e) {
     markSource('bbc_news', 'stale', e);
     log(`WARN: BBC RSS failed (${e.message}) — keeping last headlines`);
+    if (!Array.isArray(live.news)) live.news = [];
   }
 
   // --- Events -----------------------------------------------------------------
@@ -1718,6 +1724,7 @@ async function main() {
     markSource('forex_factory', 'stale', e);
     log(`WARN: Forex Factory failed (${e.message}) — keeping last events, dropping past ones`);
     if (Array.isArray(live.events)) live.events = live.events.filter((ev) => ev.date >= today);
+    if (!Array.isArray(live.events)) live.events = [];
   }
 
   // --- Per-group source + last-update metadata -------------------------------
