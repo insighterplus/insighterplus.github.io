@@ -1,5 +1,5 @@
 {
-  "fetched_at": "2026-11-24T03:37:36.541Z",
+  "fetched_at": "2026-11-24T03:47:45.405Z",
   "bulletin": "220",
   "bulletin_date": "2026-11-23",
   "syria": {
@@ -10,11 +10,11 @@
       "parallel_sell": 152
     },
     "gold21k": {
-      "buy": 15474,
-      "sell": 15702,
-      "change_vs_yesterday": -6
+      "buy": 15472,
+      "sell": 15699,
+      "change_vs_yesterday": -9
     },
-    "gold_ounce_usd": 3630.78,
+    "gold_ounce_usd": 3630.14,
     "currencies": [
       {
         "code": "USD",
@@ -395,20 +395,20 @@
       {
         "date": "2026-11-24",
         "usd_parallel_sell": 152,
-        "gold21k_sell": 15702
+        "gold21k_sell": 15699
       }
     ],
     "gold24k": {
-      "buy": 17685,
-      "sell": 17945,
+      "buy": 17682,
+      "sell": 17942,
       "usd_per_gram": 117
     },
     "gold18k": {
-      "buy": 13264,
-      "sell": 13458,
+      "buy": 13261,
+      "sell": 13456,
       "usd_per_gram": 88
     },
-    "silver_ounce_usd": 42.71,
+    "silver_ounce_usd": 42.67,
     "last_updated": "2026-11-24",
     "cross_check": {
       "usd": {
@@ -428,40 +428,40 @@
         "diverged": false
       },
       "gold21k_mid": {
-        "sp_today": 15588,
+        "sp_today": 15585.5,
         "lirascope": 15504,
-        "sypnow": 15495.25,
+        "sypnow": 15490.34,
         "diverged": true
       },
-      "checked_at": "2026-11-24T03:37:36.541Z"
+      "checked_at": "2026-11-24T03:47:45.405Z"
     },
     "gold": {
       "karats": {
         "14": {
-          "buy": 10316,
-          "sell": 10467,
+          "buy": 10314,
+          "sell": 10465,
           "usd_per_gram": 68
         },
         "18": {
-          "buy": 13264,
-          "sell": 13458,
+          "buy": 13261,
+          "sell": 13456,
           "usd_per_gram": 88
         },
         "21": {
-          "buy": 15474,
-          "sell": 15702,
+          "buy": 15472,
+          "sell": 15699,
           "usd_per_gram": 102
         },
         "24": {
-          "buy": 17685,
-          "sell": 17945,
+          "buy": 17682,
+          "sell": 17942,
           "usd_per_gram": 117
         }
       },
-      "ounce_usd": 3630.78
+      "ounce_usd": 3630.14
     },
     "silver": {
-      "ounce_usd": 42.71
+      "ounce_usd": 42.67
     },
     "parallel": {
       "cities": {
@@ -489,7 +489,7 @@
         }
       },
       "source": "Lira Today (sp-today.com)",
-      "fetched_at": "2026-11-24T03:37:36.541Z"
+      "fetched_at": "2026-11-24T03:47:45.405Z"
     }
   },
   "global_analysis": "Saturday's global pulse: Wall Street ended a strong week on a split note — the S&P 500 fell 0.4% to 7,561.67 and the Nasdaq dropped 0.9% to 25,136.27 on Friday as Nvidia slid 2% and chip stocks tumbled, AMD down 8.8%, while the Dow edged up 0.1% to 52,347.55. For the week, all three indexes still gained roughly 2–2.5%, snapping four-week losing streaks. The 10-year Treasury yield climbed to 5.15%, gold ended the week lower at about $3,886 an ounce after starting it above $4,100, and Brent crude rose to $95.84 a barrel. Crypto sentiment stayed in extreme fear at 13. Fed officials struck a hawkish tone, with San Francisco's Daly saying rates may need to rise. Next week, all eyes turn to Nvidia's earnings on Tuesday — its first report since Jensen Huang resigned — plus US retail sales and Wednesday's FOMC minutes.",
@@ -567,18 +567,18 @@
     }
   ],
   "meta": {
-    "fetched_at": "2026-11-24T03:37:36.541Z",
+    "fetched_at": "2026-11-24T03:47:45.405Z",
     "groups": {
       "syria_parallel": {
         "source": "Lira Today (sp-today.com)",
         "source_ar": "الليرة اليوم",
-        "fetched_at": "2026-11-24T03:37:36.541Z",
+        "fetched_at": "2026-11-24T03:47:45.405Z",
         "status": "live"
       },
       "syria_central": {
         "source": "Central Bank of Syria (Telegram @SyCBOS)",
         "source_ar": "مصرف سورية المركزي (تيليجرام @SyCBOS)",
-        "fetched_at": "2026-11-24T03:37:36.541Z",
+        "fetched_at": "2026-11-24T03:47:45.405Z",
         "status": "live",
         "note": "Bulletin 220 (2026-11-23) — full 21-currency table via Telegram OCR; OCR cross-check repaired OMR"
       },
@@ -587,55 +587,55 @@
         "source_ar": "الليرة اليوم",
         "fetched_at": "2026-11-24T02:47:35.520Z",
         "status": "stale",
-        "note": "Cross-check divergence: lirascope 21k mid 15504 vs sp-today mid 15588; sypnow 21k mid 15495.25 vs sp-today mid 15588"
+        "note": "Cross-check divergence: lirascope 21k mid 15504 vs sp-today mid 15585.5; sypnow 21k mid 15490.34 vs sp-today mid 15585.5"
       },
       "crypto": {
         "source": "CoinGecko",
         "source_ar": "كوين غيكو",
-        "fetched_at": "2026-11-24T03:37:36.541Z",
+        "fetched_at": "2026-11-24T03:47:45.405Z",
         "status": "live"
       },
       "fx": {
         "source": "Frankfurter / ECB",
         "source_ar": "فرانكفورتر / البنك المركزي الأوروبي",
-        "fetched_at": "2026-11-24T03:37:36.541Z",
+        "fetched_at": "2026-11-24T03:47:45.405Z",
         "status": "live"
       },
       "stocks": {
         "source": "Yahoo Finance",
         "source_ar": "ياهو فاينانس",
-        "fetched_at": "2026-11-24T03:37:36.541Z",
+        "fetched_at": "2026-11-24T03:47:45.405Z",
         "status": "live"
       },
       "metals": {
         "source": "goldprice.dev — gold & silver spot",
         "source_ar": "غولد برايس — الذهب والفضة الفوري",
-        "fetched_at": "2026-11-24T03:22:00.785869+00:00",
+        "fetched_at": "2026-11-24T03:32:01.712711+00:00",
         "status": "live"
       },
       "gulf": {
         "source": "TradingView · Yahoo Finance · Trading Economics",
         "source_ar": "تريدينغ فيو · ياهو فاينانس · تريدينغ إيكونوميكس",
-        "fetched_at": "2026-11-24T03:37:36.541Z",
+        "fetched_at": "2026-11-24T03:47:45.405Z",
         "status": "live",
         "note": "QSE is single-source (Trading Economics) — unverified"
       },
       "fear_greed": {
         "source": "alternative.me — Fear & Greed Index",
         "source_ar": "مؤشر الخوف والطمع",
-        "fetched_at": "2026-11-24T03:37:36.541Z",
+        "fetched_at": "2026-11-24T03:47:45.405Z",
         "status": "live"
       },
       "news": {
         "source": "BBC Business",
         "source_ar": "بي بي سي للأعمال",
-        "fetched_at": "2026-11-24T03:37:36.541Z",
+        "fetched_at": "2026-11-24T03:47:45.405Z",
         "status": "live"
       },
       "events": {
         "source": "Forex Factory",
         "source_ar": "فوريكس فاكتوري",
-        "fetched_at": "2026-11-24T03:37:36.541Z",
+        "fetched_at": "2026-11-24T03:47:45.405Z",
         "status": "live"
       }
     }
@@ -643,38 +643,38 @@
   "crypto": {
     "BTC": {
       "name": "Bitcoin",
-      "price": 60261,
-      "change_24h": -2.07
+      "price": 60255,
+      "change_24h": -1.53
     },
     "ETH": {
       "name": "Ethereum",
-      "price": 1692.21,
-      "change_24h": -2.53
+      "price": 1691.71,
+      "change_24h": -2.2
     },
     "SOL": {
       "name": "Solana",
-      "price": 71.1,
-      "change_24h": -0.65
+      "price": 71.01,
+      "change_24h": -0.21
     },
     "XRP": {
       "name": "XRP",
-      "price": 0.944357,
-      "change_24h": 0.95
+      "price": 0.944685,
+      "change_24h": 1.46
     },
     "BNB": {
       "name": "BNB",
-      "price": 551.29,
-      "change_24h": -1.61
+      "price": 551.53,
+      "change_24h": -1.09
     },
     "DOGE": {
       "name": "Dogecoin",
-      "price": 0.055901,
-      "change_24h": 0.68
+      "price": 0.055844,
+      "change_24h": 1.06
     },
     "ADA": {
       "name": "Cardano",
-      "price": 0.147067,
-      "change_24h": 1.5
+      "price": 0.146808,
+      "change_24h": 1.84
     }
   },
   "fx": {
@@ -915,12 +915,12 @@
     },
     "DX-Y.NYB": {
       "symbol": "DX-Y.NYB",
-      "price": 104.273,
-      "change": 2.46,
-      "change_pct": -0.04,
+      "price": 104.261,
+      "change": 2.45,
+      "change_pct": -0.05,
       "previous_close": 101.81,
       "currency": "USD",
-      "asOf": "2026-11-24T03:27:47.000Z",
+      "asOf": "2026-11-24T03:37:56.000Z",
       "spark": [
         101.81,
         101.96,
@@ -944,7 +944,7 @@
         103.9,
         103.81,
         104.32,
-        104.27
+        104.26
       ]
     },
     "^FTSE": {
@@ -1015,12 +1015,12 @@
     },
     "^N225": {
       "symbol": "^N225",
-      "price": 58675.79,
-      "change": -4017.37,
-      "change_pct": 3.97,
+      "price": 58566.33,
+      "change": -4126.83,
+      "change_pct": 3.77,
       "previous_close": 62693.16,
       "currency": "JPY",
-      "asOf": "2026-11-24T02:35:03.000Z",
+      "asOf": "2026-11-24T03:32:55.000Z",
       "spark": [
         62189.65,
         63268.37,
@@ -1041,7 +1041,7 @@
         59024.28,
         59444.21,
         56436.65,
-        58675.79
+        58566.33
       ]
     },
     "GOOGL": {
@@ -1271,12 +1271,12 @@
     },
     "000001.SS": {
       "symbol": "000001.SS",
-      "price": 3552.321,
-      "change": -138.15,
-      "change_pct": 0.38,
+      "price": 3555.491,
+      "change": -134.98,
+      "change_pct": 0.47,
       "previous_close": 3690.475,
       "currency": "CNY",
-      "asOf": "2026-11-24T03:22:45.000Z",
+      "asOf": "2026-11-24T03:30:20.000Z",
       "spark": [
         3697.52,
         3648.3,
@@ -1299,17 +1299,17 @@
         3577.62,
         3533.79,
         3538.95,
-        3552.32
+        3555.49
       ]
     },
     "^HSI": {
       "symbol": "^HSI",
-      "price": 22313.95,
-      "change": -779.42,
-      "change_pct": -0.31,
+      "price": 22300.56,
+      "change": -792.81,
+      "change_pct": -0.37,
       "previous_close": 23093.37,
       "currency": "HKD",
-      "asOf": "2026-11-24T03:22:46.000Z",
+      "asOf": "2026-11-24T03:32:56.000Z",
       "spark": [
         23211.81,
         23041.32,
@@ -1332,44 +1332,44 @@
         22841.62,
         22410.8,
         22383.74,
-        22313.95
+        22300.56
       ]
     },
     "000300.SS": {
       "symbol": "000300.SS",
-      "price": 3977.3064,
-      "change": 19.01,
-      "change_pct": 0.48,
+      "price": 3980.9126,
+      "change": 22.62,
+      "change_pct": 0.57,
       "previous_close": 3958.2937,
       "currency": "CNY",
-      "asOf": "2026-11-24T03:22:45.000Z",
+      "asOf": "2026-11-24T03:30:20.000Z",
       "spark": null
     }
   },
   "metals": {
     "GC=F": {
       "symbol": "GC=F",
-      "price": 3636.61,
+      "price": 3632.15,
       "change_pct": 3.39,
       "previous_close": 3515.4,
       "currency": "USD",
       "source": "goldprice.dev",
       "basis": "spot",
-      "computed_at": "2026-11-24T03:22:00.785869+00:00"
+      "computed_at": "2026-11-24T03:32:01.712711+00:00"
     },
     "SI=F": {
       "symbol": "SI=F",
-      "price": 42.732,
+      "price": 42.738,
       "change_pct": null,
       "previous_close": null,
       "currency": "USD",
       "source": "goldprice.dev",
       "basis": "spot",
-      "computed_at": "2026-11-24T03:22:00.785869+00:00"
+      "computed_at": "2026-11-24T03:32:01.712711+00:00"
     },
     "XAU": {
       "symbol": "XAU",
-      "price": 3636.61,
+      "price": 3632.15,
       "change_pct": 3.39,
       "previous_close": 3515.4,
       "currency": "USD",
@@ -1377,15 +1377,15 @@
       "label": "Gold spot (XAU/USD)",
       "source": "goldprice.dev",
       "basis": "spot",
-      "computed_at": "2026-11-24T03:22:00.785869+00:00",
+      "computed_at": "2026-11-24T03:32:01.712711+00:00",
       "cross_check": {
-        "goldprice_dev": 3636.61,
-        "xaus": 3629.75
+        "goldprice_dev": 3632.15,
+        "xaus": 3629.649902
       }
     },
     "XAG": {
       "symbol": "XAG",
-      "price": 42.732,
+      "price": 42.738,
       "change_pct": null,
       "previous_close": null,
       "currency": "USD",
@@ -1393,10 +1393,10 @@
       "label": "Silver spot (XAG/USD)",
       "source": "goldprice.dev",
       "basis": "spot",
-      "computed_at": "2026-11-24T03:22:00.785869+00:00",
+      "computed_at": "2026-11-24T03:32:01.712711+00:00",
       "cross_check": {
-        "goldprice_dev": 42.732,
-        "xaus": 42.553001
+        "goldprice_dev": 42.738,
+        "xaus": 42.463001
       }
     },
     "gold_history_30d": [
@@ -1597,14 +1597,14 @@
     },
     "BZ=F": {
       "symbol": "BZ=F",
-      "price": 86.63,
-      "change": -0.05,
-      "change_pct": -0.06,
+      "price": 86.54,
+      "change": -0.14,
+      "change_pct": -0.16,
       "previous_close": 86.68,
       "currency": "USD",
-      "asOf": "2026-11-24T03:27:40.000Z",
+      "asOf": "2026-11-24T03:37:08.000Z",
       "label": "Brent crude",
-      "change_abs": -0.05
+      "change_abs": -0.14
     },
     "QAT": {
       "symbol": "QAT",
@@ -1660,14 +1660,14 @@
     },
     "CL=F": {
       "symbol": "CL=F",
-      "price": 80.12,
-      "change": -0.05,
-      "change_pct": -0.06,
+      "price": 80.01,
+      "change": -0.16,
+      "change_pct": -0.2,
       "previous_close": 80.17,
       "currency": "USD",
-      "asOf": "2026-11-24T03:27:36.000Z",
+      "asOf": "2026-11-24T03:37:50.000Z",
       "label": "WTI crude",
-      "change_abs": -0.05
+      "change_abs": -0.16
     }
   },
   "fear_greed": {
@@ -1727,172 +1727,172 @@
   "sources": {
     "sp_today": {
       "status": "ok",
-      "fetched_at": "2026-11-24T03:37:37.388Z"
+      "fetched_at": "2026-11-24T03:47:46.444Z"
     },
     "lirascope": {
       "status": "ok",
-      "fetched_at": "2026-11-24T03:37:39.826Z"
+      "fetched_at": "2026-11-24T03:47:48.534Z"
     },
     "sypnow": {
       "status": "ok",
-      "fetched_at": "2026-11-24T03:37:41.120Z"
+      "fetched_at": "2026-11-24T03:47:50.215Z"
     },
     "central_bank": {
       "status": "ok",
-      "fetched_at": "2026-11-24T03:37:42.759Z"
+      "fetched_at": "2026-11-24T03:47:52.152Z"
     },
     "telegram_sycbos": {
       "status": "ok",
-      "fetched_at": "2026-11-24T03:37:47.585Z"
+      "fetched_at": "2026-11-24T03:47:57.508Z"
     },
     "coingecko": {
       "status": "ok",
-      "fetched_at": "2026-11-24T03:37:47.645Z"
+      "fetched_at": "2026-11-24T03:47:57.616Z"
     },
     "frankfurter": {
       "status": "ok",
-      "fetched_at": "2026-11-24T03:37:47.645Z"
+      "fetched_at": "2026-11-24T03:47:57.616Z"
     },
     "yahoo:^GSPC": {
       "status": "ok",
-      "fetched_at": "2026-11-24T03:37:47.714Z"
+      "fetched_at": "2026-11-24T03:47:57.678Z"
     },
     "yahoo:^NDX": {
       "status": "ok",
-      "fetched_at": "2026-11-24T03:37:47.767Z"
+      "fetched_at": "2026-11-24T03:47:57.728Z"
     },
     "yahoo:^DJI": {
       "status": "ok",
-      "fetched_at": "2026-11-24T03:37:47.812Z"
+      "fetched_at": "2026-11-24T03:47:57.777Z"
     },
     "yahoo:AAPL": {
       "status": "ok",
-      "fetched_at": "2026-11-24T03:37:47.883Z"
+      "fetched_at": "2026-11-24T03:47:57.854Z"
     },
     "yahoo:MSFT": {
       "status": "ok",
-      "fetched_at": "2026-11-24T03:37:47.952Z"
+      "fetched_at": "2026-11-24T03:47:57.926Z"
     },
     "yahoo:NVDA": {
       "status": "ok",
-      "fetched_at": "2026-11-24T03:37:48.016Z"
+      "fetched_at": "2026-11-24T03:47:57.986Z"
     },
     "yahoo:GOOGL": {
       "status": "ok",
-      "fetched_at": "2026-11-24T03:37:48.068Z"
+      "fetched_at": "2026-11-24T03:47:58.043Z"
     },
     "yahoo:AMZN": {
       "status": "ok",
-      "fetched_at": "2026-11-24T03:37:48.154Z"
+      "fetched_at": "2026-11-24T03:47:58.145Z"
     },
     "yahoo:TSLA": {
       "status": "ok",
-      "fetched_at": "2026-11-24T03:37:48.202Z"
+      "fetched_at": "2026-11-24T03:47:58.196Z"
     },
     "yahoo:META": {
       "status": "ok",
-      "fetched_at": "2026-11-24T03:37:48.292Z"
+      "fetched_at": "2026-11-24T03:47:58.248Z"
     },
     "yahoo:AMD": {
       "status": "ok",
-      "fetched_at": "2026-11-24T03:37:48.338Z"
+      "fetched_at": "2026-11-24T03:47:58.300Z"
     },
     "yahoo:AVGO": {
       "status": "ok",
-      "fetched_at": "2026-11-24T03:37:48.406Z"
+      "fetched_at": "2026-11-24T03:47:58.368Z"
     },
     "yahoo:DX-Y.NYB": {
       "status": "ok",
-      "fetched_at": "2026-11-24T03:37:48.482Z"
+      "fetched_at": "2026-11-24T03:47:58.421Z"
     },
     "yahoo:^FTSE": {
       "status": "ok",
-      "fetched_at": "2026-11-24T03:37:48.505Z"
+      "fetched_at": "2026-11-24T03:47:58.473Z"
     },
     "yahoo:^GDAXI": {
       "status": "ok",
-      "fetched_at": "2026-11-24T03:37:48.556Z"
+      "fetched_at": "2026-11-24T03:47:58.525Z"
     },
     "yahoo:^N225": {
       "status": "ok",
-      "fetched_at": "2026-11-24T03:37:48.605Z"
+      "fetched_at": "2026-11-24T03:47:58.577Z"
     },
     "yahoo:^FCHI": {
       "status": "ok",
-      "fetched_at": "2026-11-24T03:37:48.651Z"
+      "fetched_at": "2026-11-24T03:47:58.636Z"
     },
     "yahoo:000001.SS": {
       "status": "ok",
-      "fetched_at": "2026-11-24T03:37:48.701Z"
+      "fetched_at": "2026-11-24T03:47:58.687Z"
     },
     "yahoo:^HSI": {
       "status": "ok",
-      "fetched_at": "2026-11-24T03:37:48.748Z"
+      "fetched_at": "2026-11-24T03:47:58.735Z"
     },
     "yahoo:000300.SS": {
       "status": "ok",
-      "fetched_at": "2026-11-24T03:37:48.818Z"
+      "fetched_at": "2026-11-24T03:47:58.791Z"
     },
     "yahoo:^TASI.SR": {
       "status": "ok",
-      "fetched_at": "2026-11-24T03:37:48.873Z"
+      "fetched_at": "2026-11-24T03:47:58.858Z"
     },
     "yahoo:BZ=F": {
       "status": "ok",
-      "fetched_at": "2026-11-24T03:37:48.919Z"
+      "fetched_at": "2026-11-24T03:47:58.908Z"
     },
     "yahoo:CL=F": {
       "status": "ok",
-      "fetched_at": "2026-11-24T03:37:48.968Z"
+      "fetched_at": "2026-11-24T03:47:58.957Z"
     },
     "tradingview_dfm": {
       "status": "ok",
-      "fetched_at": "2026-11-24T03:37:49.060Z"
+      "fetched_at": "2026-11-24T03:47:59.043Z"
     },
     "nukoud_dfm": {
       "status": "ok",
-      "fetched_at": "2026-11-24T03:37:49.286Z"
+      "fetched_at": "2026-11-24T03:47:59.474Z"
     },
     "tradingview_adx": {
       "status": "ok",
-      "fetched_at": "2026-11-24T03:37:49.313Z"
+      "fetched_at": "2026-11-24T03:47:59.547Z"
     },
     "tradingeconomics_adx": {
       "status": "ok",
-      "fetched_at": "2026-11-24T03:37:49.405Z"
+      "fetched_at": "2026-11-24T03:47:59.710Z"
     },
     "tradingeconomics_qse": {
       "status": "ok",
-      "fetched_at": "2026-11-24T03:37:49.446Z"
+      "fetched_at": "2026-11-24T03:47:59.787Z"
     },
     "yahoo:QAT": {
       "status": "ok",
-      "fetched_at": "2026-11-24T03:37:49.519Z"
+      "fetched_at": "2026-11-24T03:47:59.843Z"
     },
     "goldprice_dev": {
       "status": "ok",
-      "fetched_at": "2026-11-24T03:37:49.948Z"
+      "fetched_at": "2026-11-24T03:48:00.296Z"
     },
     "xaus_spot": {
       "status": "ok",
-      "fetched_at": "2026-11-24T03:37:50.132Z"
+      "fetched_at": "2026-11-24T03:48:00.462Z"
     },
     "xaus_history": {
       "status": "ok",
-      "fetched_at": "2026-11-24T03:37:50.203Z"
+      "fetched_at": "2026-11-24T03:48:00.468Z"
     },
     "fear_greed": {
       "status": "ok",
-      "fetched_at": "2026-11-24T03:37:50.469Z"
+      "fetched_at": "2026-11-24T03:48:00.692Z"
     },
     "bbc_news": {
       "status": "ok",
-      "fetched_at": "2026-11-24T03:37:50.718Z"
+      "fetched_at": "2026-11-24T03:48:00.754Z"
     },
     "forex_factory": {
       "status": "ok",
-      "fetched_at": "2026-11-24T03:37:50.783Z"
+      "fetched_at": "2026-11-24T03:48:01.023Z"
     }
   },
-  "notes": "Parallel USD + gold: sp-today.com (Lira Today), cross-checked against Lirascope + SYPNow, fetched 2026-11-24T03:37:36.541Z. Official rates: Central Bank of Syria bulletin 220 (2026-11-23) — full 21-currency table via Telegram @SyCBOS OCR, cross-checked vs cb.gov.sy + Frankfurter. Crypto: CoinGecko (Kraken fallback). FX: Frankfurter/ECB; SAR/AED/QAR are fixed pegs. Stocks: Yahoo Finance. Gulf: TradingView (DFM/ADX) + Yahoo (TASI/Brent) + Trading Economics (QSE — single source, unverified). Metals spot: goldprice.dev (primary), xaus.com (backup), Yahoo futures (tertiary). Fear & Greed: alternative.me. News: BBC Business RSS (headlines + links only). Events: Forex Factory. All lira figures are new Syrian pounds. Analysis texts are editorial and update separately. Cross-check divergences this run: Gold 21k: lirascope 21k mid 15504 vs sp-today mid 15588; sypnow 21k mid 15495.25 vs sp-today mid 15588 | DFM: Nukoud cross-check disagrees: 6226.19 vs TradingView 6306.87"
+  "notes": "Parallel USD + gold: sp-today.com (Lira Today), cross-checked against Lirascope + SYPNow, fetched 2026-11-24T03:47:45.405Z. Official rates: Central Bank of Syria bulletin 220 (2026-11-23) — full 21-currency table via Telegram @SyCBOS OCR, cross-checked vs cb.gov.sy + Frankfurter. Crypto: CoinGecko (Kraken fallback). FX: Frankfurter/ECB; SAR/AED/QAR are fixed pegs. Stocks: Yahoo Finance. Gulf: TradingView (DFM/ADX) + Yahoo (TASI/Brent) + Trading Economics (QSE — single source, unverified). Metals spot: goldprice.dev (primary), xaus.com (backup), Yahoo futures (tertiary). Fear & Greed: alternative.me. News: BBC Business RSS (headlines + links only). Events: Forex Factory. All lira figures are new Syrian pounds. Analysis texts are editorial and update separately. Cross-check divergences this run: Gold 21k: lirascope 21k mid 15504 vs sp-today mid 15585.5; sypnow 21k mid 15490.34 vs sp-today mid 15585.5 | DFM: Nukoud cross-check disagrees: 6226.19 vs TradingView 6306.87"
 }
